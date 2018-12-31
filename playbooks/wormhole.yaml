@@ -1,0 +1,38 @@
+---
+
+- name: Copy index.php
+  file:
+    src:   files/index.php
+    dest:  "/var/www/index/index.php"
+    owner: apache
+    group: apache
+    mode:  "0644"
+
+# TODO: Do this if we still have time...
+# - name: Create test_from_template.php
+#   template:
+#     src:   templates/test.php
+#     dest:  "/var/www/index/test.php"
+#     owner: apache
+#     group: apache
+#     mode:  0644
+
+- name: Uninstall Apache
+  apt:
+    state: absent
+    pkg:
+      - apache2
+
+- name: Install Apache
+  apt:
+    state: present
+    pkg:
+      - apache2
+  service:
+    name: apache
+    state: restarted
+
+- name: Restart Apache
+  service:
+    name: apache
+    state: restarted
