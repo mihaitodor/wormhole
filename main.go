@@ -4,26 +4,26 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
-	"log"
+	"os"
+	"path/filepath"
+	"sync"
 	"time"
 
-	"github.com/davecgh/go-spew/spew"
+	scp "github.com/bramvdbogaerde/go-scp"
 	"github.com/mitchellh/mapstructure"
+	log "github.com/sirupsen/logrus"
+	"golang.org/x/crypto/ssh"
 	kingpin "gopkg.in/alecthomas/kingpin.v2"
 	yaml "gopkg.in/yaml.v2"
 )
 
-// Move this stuff to a function...
-var (
-	verbose = kingpin.Flag("verbose", "Verbose mode.").Short('v').Bool()
-	name    = kingpin.Arg("name", "Name of user.").Required().String()
-)
-
 type Config struct {
-	PlaybooksFolder   string
-	ConnectTimeout    time.Duration
-	ProcessingTimeout time.Duration
-	ConcurrentActions int
+	Playbook                 string
+	PlaybookFolder           string
+	Inventory                string
+	ConnectTimeout           time.Duration
+	ExecTimeout              time.Duration
+	MaxConcurrentConnections int
 }
 
 type Server struct {
@@ -32,9 +32,14 @@ type Server struct {
 	Password string
 }
 
+type Connection struct {
+	Server Server
+	Client *ssh.Client
+}
+
 type Inventory []Server
 
-func LoadInventory(inventoryFile string) (*Inventory, error) {
+func LoadInventory(inventoryFile string) (Inventory, error) {
 	fileContents, err := ioutil.ReadFile(inventoryFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open inventory file: %s", err)
@@ -46,25 +51,13 @@ func LoadInventory(inventoryFile string) (*Inventory, error) {
 		return nil, fmt.Errorf("failed to unmarshal inventory contents: %s", err)
 	}
 
-	return &inventory, nil
+	return inventory, nil
 }
 
-// TODO: See if this is still needed further along
-// const (
-// 	ActionFile = iota
-// 	// ActionTemplate
-// 	ActionApt
-// )
-
-// type ActionType int
-
-// var (
-// 	knownActions = map[string]struct{}{
-// 		"file":    {},
-// 		"apt":     {},
-// 		"service": {},
-// 	}
-// )
+type Action interface {
+	GetType() string
+	Run(*ssh.Client, Config) error
+}
 
 type FileAction struct {
 	Src   string
@@ -74,9 +67,41 @@ type FileAction struct {
 	Mode  string
 }
 
+func (*FileAction) GetType() string {
+	return "file"
+}
+
+func (a *FileAction) Run(client *ssh.Client, config Config) error {
+	return CopyFile(client, config.PlaybookFolder, config.ExecTimeout, *a)
+}
+
 type AptAction struct {
 	State string
 	Pkg   []string
+}
+
+func (*AptAction) GetType() string {
+	return "apt"
+}
+
+func (a *AptAction) Run(client *ssh.Client, config Config) error {
+	err := SshExec(client, func(sess *ssh.Session) error {
+		return sess.Run("apt-get update")
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update package lists: %s", err)
+	}
+
+	for _, pkg := range a.Pkg {
+		err = SshExec(client, func(sess *ssh.Session) error {
+			return sess.Run(fmt.Sprintf("apt-get update && apt-get install -y %s", pkg))
+		})
+		if err != nil {
+			return fmt.Errorf("failed to install package %q: %s", pkg, err)
+		}
+	}
+
+	return nil
 }
 
 type ServiceAction struct {
@@ -84,9 +109,19 @@ type ServiceAction struct {
 	State string
 }
 
+func (*ServiceAction) GetType() string {
+	return "service"
+}
+
+func (a *ServiceAction) Run(client *ssh.Client, config Config) error {
+	return SshExec(client, func(sess *ssh.Session) error {
+		return sess.Run(fmt.Sprintf("service %s %s", a.Name, a.State))
+	})
+}
+
 type Task struct {
 	Name    string
-	Actions []interface{}
+	Actions []Action
 }
 
 type Playbook struct {
@@ -94,7 +129,7 @@ type Playbook struct {
 	Tasks []*Task
 }
 
-func getActionByName(name string) (interface{}, error) {
+func getActionByName(name string) (Action, error) {
 	switch name {
 	case "file":
 		return &FileAction{}, nil
@@ -107,7 +142,9 @@ func getActionByName(name string) (interface{}, error) {
 	return nil, fmt.Errorf("unrecognised action %q", name)
 }
 
-// Implements the Unmarshaler interface of the yaml pkg.
+// UnmarshalYAML unmarshals a task and populates known actions into their
+// specific objects using mapstructure. This is not a very efficient
+// way of doing it, due to the double parsing.
 func (t *Task) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	var rawTask map[string]interface{}
 	err := unmarshal(&rawTask)
@@ -127,7 +164,7 @@ func (t *Task) UnmarshalYAML(unmarshal func(interface{}) error) error {
 
 	t.Name = name
 
-	// delete name item, since it doesn't represent an action
+	// Delete name item, since it doesn't represent an action
 	delete(rawTask, "name")
 
 	for actionName, rawAction := range rawTask {
@@ -162,41 +199,192 @@ func LoadPlaybook(playbookFile string) (*Playbook, error) {
 	return &playbook, nil
 }
 
-func RunPlaybook(playbook *Playbook, inventory *Inventory) error {
-	for _, task := range playbook.Tasks {
-		log.Printf("Runing task: %s", task.Name)
+func connectServer(server Server, timeout time.Duration) (*Connection, error) {
+	sshConfig := &ssh.ClientConfig{
+		User: server.Username,
+		Auth: []ssh.AuthMethod{
+			ssh.Password(server.Password),
+		},
+		Timeout: timeout,
+		// TODO: Be stricter about security
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	}
 
-		// for _, server := range *inventory {
+	client, err := ssh.Dial("tcp", server.Address, sshConfig)
+	if err != nil {
+		return nil, fmt.Errorf("dial error: %s", err)
+	}
 
-		// }
+	return &Connection{Server: server, Client: client}, nil
+}
+
+func SshExec(client *ssh.Client, fn func(*ssh.Session) error) error {
+	sess, err := client.NewSession()
+	if err != nil {
+		client.Close()
+		return fmt.Errorf("failed to create session: %s", err)
+	}
+
+	defer sess.Close()
+
+	return fn(sess)
+}
+
+func CopyFile(client *ssh.Client, rootFolder string, timeout time.Duration, action FileAction) error {
+	err := SshExec(client, func(sess *ssh.Session) error {
+		scpClient := scp.Client{
+			Session: sess,
+			Timeout: timeout,
+		}
+
+		f, err := os.Open(filepath.Join(rootFolder, action.Src))
+		if err != nil {
+			return fmt.Errorf("failed to open file: %s", err)
+		}
+
+		mode := action.Mode
+		if mode == "" {
+			mode = "0644"
+		}
+
+		return scpClient.CopyFromFile(*f, action.Dest, mode)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to copy file %q: %s", action.Src, err)
+	}
+
+	if action.Owner != "" && action.Group != "" {
+		err = SshExec(client, func(sess *ssh.Session) error {
+			return sess.Run(
+				fmt.Sprintf("chown %s:%s %s", action.Owner, action.Group, action.Dest),
+			)
+		})
+		if err != nil {
+			return fmt.Errorf(
+				"failed to set the file owner on %q to %s:%s: %s",
+				action.Dest, action.Owner, action.Group, err,
+			)
+		}
 	}
 
 	return nil
 }
 
-func main() {
-	/*
-		do Config via Kingpin!
-		inventoryFile: inventory.yaml
-		playbooksFolder: playbooks
-		connectTimeout: 30s
-		processingTimeout: 1m
-		concurrentActions: 2
-	*/
+func RunPlaybook(wg *sync.WaitGroup, conn *Connection, config Config, playbook *Playbook) {
+	defer wg.Done()
 
-	inventory, err := LoadInventory("inventory.yaml")
+	for idx, task := range playbook.Tasks {
+		log.Infof(
+			"Runing task [%d/%d] on %q: %s", idx+1,
+			len(playbook.Tasks), conn.Server.Address, task.Name,
+		)
+
+		for _, a := range task.Actions {
+			err := a.Run(conn.Client, config)
+			if err != nil {
+				// Something went wrong. The whole playbook
+				// needs to be rerun on this host.
+				log.Warnf(
+					"Failed to run action %q on %q: %s",
+					a.GetType(), conn.Server.Address, err,
+				)
+				return
+			}
+		}
+	}
+}
+
+func Run(config Config, playbook *Playbook, inventory Inventory) error {
+	for start := 0; start < len(inventory); start += config.MaxConcurrentConnections {
+		end := start + config.MaxConcurrentConnections
+		if end > len(inventory) {
+			end = len(inventory)
+		}
+
+		// Open a ssh session to each server in the current batch
+		var connections []*Connection
+		for _, server := range inventory[start:end] {
+			client, err := connectServer(server, config.ConnectTimeout)
+			if err != nil {
+				log.Warnf("Failed to connect to server %q: %s", server.Address, err)
+				continue
+			}
+
+			connections = append(connections, client)
+		}
+
+		if len(connections) == 0 {
+			continue
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(len(connections))
+		for _, conn := range connections {
+			go RunPlaybook(&wg, conn, config, playbook)
+		}
+		wg.Wait()
+
+		// Close ssh clients
+		for _, conn := range connections {
+			err := conn.Client.Close()
+			if err != nil {
+				log.Warnf(
+					"Failed to close connection to server %q: %s",
+					conn.Server.Address, err,
+				)
+			}
+		}
+	}
+
+	return nil
+}
+
+func InitConfing() Config {
+	playbook := kingpin.Arg("playbook", "Playbook file.").Required().String()
+
+	inventory := kingpin.Flag("inventory", "Inventory file.").
+		Short('i').Default("inventory.yaml").String()
+
+	connectTimeout := kingpin.Flag("connect-timeout", "Connect timeout.").
+		Short('c').Default("5s").Duration()
+
+	execTimeout := kingpin.Flag("exec-timeout", "Execution timeout.").
+		Short('e').Default("5m").Duration()
+
+	maxConcurrentConnections := kingpin.Flag("max-concurrent-connections", "Max concurrent connections.").
+		Short('m').Default("2").Uint()
+
+	kingpin.Parse()
+
+	if *maxConcurrentConnections == 0 {
+		log.Fatal("Max concurrent connections needs to be greater than 0")
+	}
+
+	return Config{
+		Playbook:                 *playbook,
+		PlaybookFolder:           filepath.Dir(*playbook),
+		Inventory:                *inventory,
+		ConnectTimeout:           *connectTimeout,
+		ExecTimeout:              *execTimeout,
+		MaxConcurrentConnections: int(*maxConcurrentConnections),
+	}
+}
+
+func main() {
+	config := InitConfing()
+
+	inventory, err := LoadInventory(config.Inventory)
 	if err != nil {
 		log.Fatalf("Failed to load inventory: %s", err)
 	}
 
-	spew.Dump(inventory)
-
-	playbook, err := LoadPlaybook("playbooks/wormhole.yaml")
+	playbook, err := LoadPlaybook(config.Playbook)
 	if err != nil {
 		log.Fatalf("Failed to load playbook: %s", err)
 	}
 
-	// spew.Dump(playbook)
-
-	err = RunPlaybook(playbook, inventory)
+	err = Run(config, playbook, inventory)
+	if err != nil {
+		log.Fatalf("Failed to run playbook: %s", err)
+	}
 }
