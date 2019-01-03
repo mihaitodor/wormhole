@@ -119,6 +119,18 @@ func (a *ServiceAction) Run(client *ssh.Client, config Config) error {
 	})
 }
 
+type ShellAction string
+
+func (*ShellAction) GetType() string {
+	return "shell"
+}
+
+func (a *ShellAction) Run(client *ssh.Client, config Config) error {
+	return SshExec(client, func(sess *ssh.Session) error {
+		return sess.Run(string(*a))
+	})
+}
+
 type Task struct {
 	Name    string
 	Actions []Action
@@ -132,14 +144,16 @@ type Playbook struct {
 func getActionByName(name string) (Action, error) {
 	switch name {
 	case "file":
-		return &FileAction{}, nil
+		return new(FileAction), nil
 	case "apt":
-		return &AptAction{}, nil
+		return new(AptAction), nil
 	case "service":
-		return &ServiceAction{}, nil
+		return new(ServiceAction), nil
+	case "shell":
+		return new(ShellAction), nil
+	default:
+		return nil, fmt.Errorf("unrecognised action %q", name)
 	}
-
-	return nil, fmt.Errorf("unrecognised action %q", name)
 }
 
 // UnmarshalYAML unmarshals a task and populates known actions into their

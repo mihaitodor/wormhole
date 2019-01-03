@@ -1,38 +1,35 @@
 ---
 
-- name: Copy index.php
-  file:
-    src:   files/index.php
-    dest:  "/var/www/index/index.php"
-    owner: apache
-    group: apache
-    mode:  "0644"
-
-# TODO: Do this if we still have time...
-# - name: Create test_from_template.php
-#   template:
-#     src:   templates/test.php
-#     dest:  "/var/www/index/test.php"
-#     owner: apache
-#     group: apache
-#     mode:  0644
-
-- name: Uninstall Apache
-  apt:
-    state: absent
-    pkg:
-      - apache2
-
-- name: Install Apache
+- name: Install Apache and PHP
   apt:
     state: present
     pkg:
       - apache2
-  service:
-    name: apache
-    state: restarted
+      - php5
+
+# Fix AH00558 warning
+- name: Configure Apache ServerName
+  file:
+    src: files/servername.conf
+    dest: /etc/apache2/conf-available/servername.conf
+  # Enable servername.conf
+  shell: "a2enconf -q servername"
+
+# Force DirectoryIndex to index.php instead of index.html
+- name: Configure Apache default site
+  file:
+    src: files/000-default.conf
+    dest: /etc/apache2/sites-available/000-default.conf
 
 - name: Restart Apache
   service:
-    name: apache
-    state: restarted
+    name: apache2
+    state: restart
+
+- name: Copy index.php
+  file:
+    src:   files/index.php
+    dest:  /var/www/html/index.php
+    owner: root
+    group: root
+    mode:  "0644"
