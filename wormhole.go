@@ -85,6 +85,7 @@ func (*AptAction) GetType() string {
 }
 
 func (a *AptAction) Run(client *ssh.Client, config Config) error {
+	// Update package lists first
 	err := SshExec(client, func(sess *ssh.Session) error {
 		return sess.Run("apt-get update")
 	})
@@ -92,9 +93,10 @@ func (a *AptAction) Run(client *ssh.Client, config Config) error {
 		return fmt.Errorf("failed to update package lists: %s", err)
 	}
 
+	// Install the requested packages
 	for _, pkg := range a.Pkg {
 		err = SshExec(client, func(sess *ssh.Session) error {
-			return sess.Run(fmt.Sprintf("apt-get update && apt-get install -y %s", pkg))
+			return sess.Run(fmt.Sprintf("apt-get install -y %s", pkg))
 		})
 		if err != nil {
 			return fmt.Errorf("failed to install package %q: %s", pkg, err)
