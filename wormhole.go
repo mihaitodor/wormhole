@@ -72,7 +72,43 @@ func (*FileAction) GetType() string {
 }
 
 func (a *FileAction) Run(client *ssh.Client, config Config) error {
-	return CopyFile(client, config.PlaybookFolder, config.ExecTimeout, *a)
+	err := SshExec(client, func(sess *ssh.Session) error {
+		scpClient := scp.Client{
+			Session: sess,
+			Timeout: config.ExecTimeout,
+		}
+
+		f, err := os.Open(filepath.Join(config.PlaybookFolder, a.Src))
+		if err != nil {
+			return fmt.Errorf("failed to open file: %s", err)
+		}
+
+		mode := a.Mode
+		if mode == "" {
+			mode = "0644"
+		}
+
+		return scpClient.CopyFromFile(*f, a.Dest, mode)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to copy file %q: %s", a.Src, err)
+	}
+
+	if a.Owner != "" && a.Group != "" {
+		err = SshExec(client, func(sess *ssh.Session) error {
+			return sess.Run(
+				fmt.Sprintf("chown %s:%s %s", a.Owner, a.Group, a.Dest),
+			)
+		})
+		if err != nil {
+			return fmt.Errorf(
+				"failed to set the file owner on %q to %s:%s: %s",
+				a.Dest, a.Owner, a.Group, err,
+			)
+		}
+	}
+
+	return nil
 }
 
 type AptAction struct {
@@ -244,46 +280,6 @@ func SshExec(client *ssh.Client, fn func(*ssh.Session) error) error {
 	defer sess.Close()
 
 	return fn(sess)
-}
-
-func CopyFile(client *ssh.Client, rootFolder string, timeout time.Duration, action FileAction) error {
-	err := SshExec(client, func(sess *ssh.Session) error {
-		scpClient := scp.Client{
-			Session: sess,
-			Timeout: timeout,
-		}
-
-		f, err := os.Open(filepath.Join(rootFolder, action.Src))
-		if err != nil {
-			return fmt.Errorf("failed to open file: %s", err)
-		}
-
-		mode := action.Mode
-		if mode == "" {
-			mode = "0644"
-		}
-
-		return scpClient.CopyFromFile(*f, action.Dest, mode)
-	})
-	if err != nil {
-		return fmt.Errorf("failed to copy file %q: %s", action.Src, err)
-	}
-
-	if action.Owner != "" && action.Group != "" {
-		err = SshExec(client, func(sess *ssh.Session) error {
-			return sess.Run(
-				fmt.Sprintf("chown %s:%s %s", action.Owner, action.Group, action.Dest),
-			)
-		})
-		if err != nil {
-			return fmt.Errorf(
-				"failed to set the file owner on %q to %s:%s: %s",
-				action.Dest, action.Owner, action.Group, err,
-			)
-		}
-	}
-
-	return nil
 }
 
 func RunPlaybook(wg *sync.WaitGroup, conn *Connection, config Config, playbook *Playbook) {
