@@ -1,15 +1,18 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
-	scp "github.com/bramvdbogaerde/go-scp"
 	"github.com/mitchellh/mapstructure"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/ssh"
@@ -54,9 +57,69 @@ func LoadInventory(inventoryFile string) (Inventory, error) {
 	return inventory, nil
 }
 
+func SshExec(ctx context.Context, client *ssh.Client, fn func(*ssh.Session) error) error {
+	sess, err := client.NewSession()
+	if err != nil {
+		client.Close()
+		return fmt.Errorf("failed to create session: %s", err)
+	}
+	defer sess.Close()
+
+	remoteStdin, err := sess.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("failed to get the session stdin pipe: %s", err)
+	}
+	defer remoteStdin.Close()
+
+	// Request a pseudo terminal for forwarding signals to the remote process
+	err = sess.RequestPty("xterm", 80, 40,
+		ssh.TerminalModes{
+			ssh.ECHO:          0,     // disable echoing
+			ssh.TTY_OP_ISPEED: 14400, // input speed = 14.4kbaud
+			ssh.TTY_OP_OSPEED: 14400, // output speed = 14.4kbaud
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to setup the pseudo terminal: %s", err)
+	}
+
+	// If requested, send SIGINT to the remote process and close the session
+	quit := make(chan struct{})
+	defer close(quit)
+	go func() {
+		select {
+		case <-ctx.Done():
+			// Looks like ssh.SIGINT is not supported by OpenSSH. What a bummer :(
+			// https://github.com/golang/go/issues/4115#issuecomment-66070418
+			// https://github.com/golang/go/issues/16597
+			// err := sess.Signal(ssh.SIGINT)
+			_, err := remoteStdin.Write([]byte("\x03"))
+			if err != nil && err != io.EOF {
+				log.Warnf("Failed to send SIGINT to the remote process: %s", err)
+			}
+		case <-quit:
+			// Let this goroutine exit
+		}
+	}()
+
+	err = fn(sess)
+	if err != nil {
+		return fmt.Errorf("failed to start the ssh command: %s", err)
+	}
+
+	// Wait for the ssh command to finish running
+	err = sess.Wait()
+	if err != nil {
+		return fmt.Errorf("ssh command failed: %s", err)
+	}
+
+	// Make sure we always return some error when the command is cancelled
+	return ctx.Err()
+}
+
 type Action interface {
 	GetType() string
-	Run(*ssh.Client, Config) error
+	Run(context.Context, *ssh.Client, Config) error
 }
 
 type FileAction struct {
@@ -71,32 +134,104 @@ func (*FileAction) GetType() string {
 	return "file"
 }
 
-func (a *FileAction) Run(client *ssh.Client, config Config) error {
-	err := SshExec(client, func(sess *ssh.Session) error {
-		scpClient := scp.Client{
-			Session: sess,
-			Timeout: config.ExecTimeout,
+// waitTimeout waits for the waitgroup for the specified max timeout.
+// Returns true if waiting timed out.
+func waitTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
+	c := make(chan struct{})
+	go func() {
+		defer close(c)
+		wg.Wait()
+	}()
+	select {
+	case <-c:
+		return false // completed normally
+	case <-time.After(timeout):
+		return true // timed out
+	}
+}
+
+// Copies the contents of src to dest on a remote host
+func copyFile(sess *ssh.Session, timeout time.Duration, src, dest, mode string) error {
+	f, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("failed to open source file: %s", err)
+	}
+	stat, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to get source file info: %s", err)
+	}
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+
+	errCh := make(chan error, 2)
+
+	w, err := sess.StdinPipe()
+	defer w.Close()
+
+	// Start the scp receiver on the remote host
+	err = sess.Start("/usr/bin/scp -qt " + filepath.Dir(dest))
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		defer wg.Done()
+
+		_, err = fmt.Fprintln(w, "C"+mode, stat.Size(), filepath.Base(dest))
+		if err != nil {
+			errCh <- err
+			return
 		}
 
-		f, err := os.Open(filepath.Join(config.PlaybookFolder, a.Src))
+		_, err = io.Copy(w, f)
 		if err != nil {
-			return fmt.Errorf("failed to open file: %s", err)
+			errCh <- err
+			return
 		}
+
+		_, err = fmt.Fprint(w, "\x00")
+		if err != nil {
+			errCh <- err
+			return
+		}
+	}()
+
+	if waitTimeout(&wg, timeout) {
+		return errors.New("timeout when upload files")
+	}
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *FileAction) Run(ctx context.Context, client *ssh.Client, config Config) error {
+	err := SshExec(ctx, client, func(sess *ssh.Session) error {
 
 		mode := a.Mode
 		if mode == "" {
 			mode = "0644"
 		}
 
-		return scpClient.CopyFromFile(*f, a.Dest, mode)
+		return copyFile(
+			sess,
+			config.ExecTimeout,
+			filepath.Join(config.PlaybookFolder, a.Src),
+			a.Dest,
+			mode,
+		)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to copy file %q: %s", a.Src, err)
 	}
 
 	if a.Owner != "" && a.Group != "" {
-		err = SshExec(client, func(sess *ssh.Session) error {
-			return sess.Run(
+		err = SshExec(ctx, client, func(sess *ssh.Session) error {
+			return sess.Start(
 				fmt.Sprintf("chown %s:%s %s", a.Owner, a.Group, a.Dest),
 			)
 		})
@@ -120,10 +255,10 @@ func (*AptAction) GetType() string {
 	return "apt"
 }
 
-func (a *AptAction) Run(client *ssh.Client, config Config) error {
+func (a *AptAction) Run(ctx context.Context, client *ssh.Client, config Config) error {
 	// Update package lists first
-	err := SshExec(client, func(sess *ssh.Session) error {
-		return sess.Run("apt-get update")
+	err := SshExec(ctx, client, func(sess *ssh.Session) error {
+		return sess.Start("apt-get update")
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update package lists: %s", err)
@@ -131,8 +266,8 @@ func (a *AptAction) Run(client *ssh.Client, config Config) error {
 
 	// Install the requested packages
 	for _, pkg := range a.Pkg {
-		err = SshExec(client, func(sess *ssh.Session) error {
-			return sess.Run(fmt.Sprintf("apt-get install -y %s", pkg))
+		err = SshExec(ctx, client, func(sess *ssh.Session) error {
+			return sess.Start(fmt.Sprintf("apt-get install -y %s", pkg))
 		})
 		if err != nil {
 			return fmt.Errorf("failed to install package %q: %s", pkg, err)
@@ -151,9 +286,9 @@ func (*ServiceAction) GetType() string {
 	return "service"
 }
 
-func (a *ServiceAction) Run(client *ssh.Client, config Config) error {
-	return SshExec(client, func(sess *ssh.Session) error {
-		return sess.Run(fmt.Sprintf("service %s %s", a.Name, a.State))
+func (a *ServiceAction) Run(ctx context.Context, client *ssh.Client, config Config) error {
+	return SshExec(ctx, client, func(sess *ssh.Session) error {
+		return sess.Start(fmt.Sprintf("service %s %s", a.Name, a.State))
 	})
 }
 
@@ -163,9 +298,9 @@ func (*ShellAction) GetType() string {
 	return "shell"
 }
 
-func (a *ShellAction) Run(client *ssh.Client, config Config) error {
-	return SshExec(client, func(sess *ssh.Session) error {
-		return sess.Run(string(*a))
+func (a *ShellAction) Run(ctx context.Context, client *ssh.Client, config Config) error {
+	return SshExec(ctx, client, func(sess *ssh.Session) error {
+		return sess.Start(string(*a))
 	})
 }
 
@@ -251,6 +386,30 @@ func LoadPlaybook(playbookFile string) (*Playbook, error) {
 	return &playbook, nil
 }
 
+func RunPlaybook(ctx context.Context, wg *sync.WaitGroup, conn *Connection, config Config, playbook *Playbook) {
+	defer wg.Done()
+
+	for idx, task := range playbook.Tasks {
+		log.Infof(
+			"Runing task [%d/%d] on %q: %s", idx+1,
+			len(playbook.Tasks), conn.Server.Address, task.Name,
+		)
+
+		for _, a := range task.Actions {
+			err := a.Run(ctx, conn.Client, config)
+			if err != nil {
+				// Something went wrong. The whole playbook
+				// needs to be rerun on this host.
+				log.Warnf(
+					"Failed to run action %q on %q: %s",
+					a.GetType(), conn.Server.Address, err,
+				)
+				return
+			}
+		}
+	}
+}
+
 func connectServer(server Server, timeout time.Duration) (*Connection, error) {
 	sshConfig := &ssh.ClientConfig{
 		User: server.Username,
@@ -270,43 +429,7 @@ func connectServer(server Server, timeout time.Duration) (*Connection, error) {
 	return &Connection{Server: server, Client: client}, nil
 }
 
-func SshExec(client *ssh.Client, fn func(*ssh.Session) error) error {
-	sess, err := client.NewSession()
-	if err != nil {
-		client.Close()
-		return fmt.Errorf("failed to create session: %s", err)
-	}
-
-	defer sess.Close()
-
-	return fn(sess)
-}
-
-func RunPlaybook(wg *sync.WaitGroup, conn *Connection, config Config, playbook *Playbook) {
-	defer wg.Done()
-
-	for idx, task := range playbook.Tasks {
-		log.Infof(
-			"Runing task [%d/%d] on %q: %s", idx+1,
-			len(playbook.Tasks), conn.Server.Address, task.Name,
-		)
-
-		for _, a := range task.Actions {
-			err := a.Run(conn.Client, config)
-			if err != nil {
-				// Something went wrong. The whole playbook
-				// needs to be rerun on this host.
-				log.Warnf(
-					"Failed to run action %q on %q: %s",
-					a.GetType(), conn.Server.Address, err,
-				)
-				return
-			}
-		}
-	}
-}
-
-func Run(config Config, playbook *Playbook, inventory Inventory) error {
+func Run(ctx context.Context, config Config, playbook *Playbook, inventory Inventory) error {
 	for start := 0; start < len(inventory); start += config.MaxConcurrentConnections {
 		end := start + config.MaxConcurrentConnections
 		if end > len(inventory) {
@@ -332,7 +455,7 @@ func Run(config Config, playbook *Playbook, inventory Inventory) error {
 		var wg sync.WaitGroup
 		wg.Add(len(connections))
 		for _, conn := range connections {
-			go RunPlaybook(&wg, conn, config, playbook)
+			go RunPlaybook(ctx, &wg, conn, config, playbook)
 		}
 		wg.Wait()
 
@@ -382,6 +505,21 @@ func InitConfing() Config {
 	}
 }
 
+func InitGracefulStop() context.Context {
+	gracefulStop := make(chan os.Signal)
+	signal.Notify(gracefulStop, syscall.SIGINT, syscall.SIGTERM)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		sig := <-gracefulStop
+		log.Warnf("Received signal %q. Exiting as soon as possible!", sig)
+		cancel()
+	}()
+
+	return ctx
+}
+
 func main() {
 	config := InitConfing()
 
@@ -395,8 +533,17 @@ func main() {
 		log.Fatalf("Failed to load playbook: %s", err)
 	}
 
-	err = Run(config, playbook, inventory)
+	ctx := InitGracefulStop()
+
+	err = Run(ctx, config, playbook, inventory)
 	if err != nil {
 		log.Fatalf("Failed to run playbook: %s", err)
+	}
+
+	select {
+	case <-ctx.Done():
+		log.Fatalf("Abnormal termination due to: %s", ctx.Err())
+	default:
+		// Exit normally
 	}
 }
