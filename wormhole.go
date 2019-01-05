@@ -16,6 +16,7 @@ import (
 	"github.com/mitchellh/mapstructure"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/sync/errgroup"
 	kingpin "gopkg.in/alecthomas/kingpin.v2"
 	yaml "gopkg.in/yaml.v2"
 )
@@ -57,60 +58,140 @@ func LoadInventory(inventoryFile string) (Inventory, error) {
 	return inventory, nil
 }
 
-func SshExec(ctx context.Context, client *ssh.Client, fn func(*ssh.Session) error) error {
-	sess, err := client.NewSession()
+// Session is a wrapper around ssh.Session
+type Session struct {
+	sshSess               *ssh.Session
+	onceStdinCloser       sync.Once
+	stdin                 io.WriteCloser
+	sigintHandlerQuitChan chan struct{}
+}
+
+// Start starts a remote process in the current session
+func (s *Session) Start(cmd string) error {
+	return s.sshSess.Start(cmd)
+}
+
+// wait blocks until the remote process completes or is cancelled
+func (s *Session) wait() error {
+	return s.sshSess.Wait()
+}
+
+// Stdin returns a pipe to the stdin of the remote process
+func (s *Session) Stdin() io.Writer {
+	return s.stdin
+}
+
+// CloseStdin closes the stdin pipe of the remote process
+func (s *Session) CloseStdin() error {
+	var err error
+	s.onceStdinCloser.Do(func() {
+		err = s.stdin.Close()
+	})
+	return err
+}
+
+// close closes the current session
+func (s *Session) close() error {
+	if s.sigintHandlerQuitChan != nil {
+		close(s.sigintHandlerQuitChan)
+	}
+
+	err := s.CloseStdin()
+	if err != nil {
+		return fmt.Errorf("failed to close stdin: %s", err)
+	}
+
+	err = s.sshSess.Close()
+	if err != nil {
+		return fmt.Errorf("failed to close session: %s", err)
+	}
+
+	return nil
+}
+
+// newSession creates a new session
+func newSession(ctx context.Context, client *ssh.Client, withTerminal bool) (*Session, error) {
+	sshSess, err := client.NewSession()
 	if err != nil {
 		client.Close()
-		return fmt.Errorf("failed to create session: %s", err)
+		return nil, fmt.Errorf("failed to initialise session: %s", err)
 	}
-	defer sess.Close()
 
-	remoteStdin, err := sess.StdinPipe()
+	stdin, err := sshSess.StdinPipe()
 	if err != nil {
-		return fmt.Errorf("failed to get the session stdin pipe: %s", err)
+		return nil, fmt.Errorf("failed to get the session stdin pipe: %s", err)
 	}
-	defer remoteStdin.Close()
 
 	// Request a pseudo terminal for forwarding signals to the remote process
-	err = sess.RequestPty("xterm", 80, 40,
-		ssh.TerminalModes{
-			ssh.ECHO:          0,     // disable echoing
-			ssh.TTY_OP_ISPEED: 14400, // input speed = 14.4kbaud
-			ssh.TTY_OP_OSPEED: 14400, // output speed = 14.4kbaud
-		},
-	)
-	if err != nil {
-		return fmt.Errorf("failed to setup the pseudo terminal: %s", err)
+	// NB: scp misbehaves when a pseudoterminal is attached, but we need one
+	// to cancel other commands...
+	if withTerminal {
+		err = sshSess.RequestPty("xterm", 80, 40,
+			ssh.TerminalModes{
+				ssh.ECHO:          0,     // disable echoing
+				ssh.TTY_OP_ISPEED: 14400, // input speed = 14.4kbaud
+				ssh.TTY_OP_OSPEED: 14400, // output speed = 14.4kbaud
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to setup the pseudo terminal: %s", err)
+		}
 	}
 
 	// If requested, send SIGINT to the remote process and close the session
-	quit := make(chan struct{})
-	defer close(quit)
+	quitChan := make(chan struct{})
+	sess := Session{sshSess: sshSess, stdin: stdin, sigintHandlerQuitChan: quitChan}
 	go func() {
 		select {
 		case <-ctx.Done():
-			// Looks like ssh.SIGINT is not supported by OpenSSH. What a bummer :(
-			// https://github.com/golang/go/issues/4115#issuecomment-66070418
-			// https://github.com/golang/go/issues/16597
-			// err := sess.Signal(ssh.SIGINT)
-			_, err := remoteStdin.Write([]byte("\x03"))
-			if err != nil && err != io.EOF {
-				log.Warnf("Failed to send SIGINT to the remote process: %s", err)
+			if withTerminal {
+				// Looks like ssh.SIGINT is not supported by OpenSSH. What a bummer :(
+				// https://github.com/golang/go/issues/4115#issuecomment-66070418
+				// https://github.com/golang/go/issues/16597
+				// err := sshSess.Signal(ssh.SIGINT)
+				_, err := stdin.Write([]byte("\x03"))
+				if err != nil && err != io.EOF {
+					log.Warnf("Failed to send SIGINT to the remote process: %s", err)
+				}
 			}
-		case <-quit:
-			// Let this goroutine exit
+			sess.CloseStdin()
+		case <-quitChan:
+			// Stop the signal handler when the task completes
 		}
 	}()
 
-	err = fn(sess)
+	return &sess, nil
+}
+
+func SshExec(ctx context.Context, client *ssh.Client, withTerminal bool, fn func(*Session) (error, *errgroup.Group)) error {
+	sess, err := newSession(ctx, client, withTerminal)
 	if err != nil {
+		fmt.Errorf("failed to create new session: %s", err)
+	}
+	defer sess.close()
+
+	prepErr, g := fn(sess)
+	if prepErr != nil {
 		return fmt.Errorf("failed to start the ssh command: %s", err)
 	}
 
-	// Wait for the ssh command to finish running
-	err = sess.Wait()
+	// Wait for the session to finish running
+	err = sess.wait()
 	if err != nil {
-		return fmt.Errorf("ssh command failed: %s", err)
+		// Check the async operation (if there is any) for the error
+		// cause before returning it
+		err = fmt.Errorf("failed ssh command: %s", err)
+	}
+
+	if g != nil {
+		asyncErr := g.Wait()
+		if asyncErr != nil {
+			err = fmt.Errorf("%s: failed async ssh operation: %s", err, asyncErr)
+		}
+	}
+
+	if err != nil {
+		return err
 	}
 
 	// Make sure we always return some error when the command is cancelled
@@ -134,106 +215,73 @@ func (*FileAction) GetType() string {
 	return "file"
 }
 
-// waitTimeout waits for the waitgroup for the specified max timeout.
-// Returns true if waiting timed out.
-func waitTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
-	c := make(chan struct{})
-	go func() {
-		defer close(c)
-		wg.Wait()
-	}()
-	select {
-	case <-c:
-		return false // completed normally
-	case <-time.After(timeout):
-		return true // timed out
-	}
-}
-
 // Copies the contents of src to dest on a remote host
-func copyFile(sess *ssh.Session, timeout time.Duration, src, dest, mode string) error {
-	f, err := os.Open(src)
+func copyFile(sess *Session, timeout time.Duration, src io.Reader, size int64, dest, mode string) error {
+	// Instruct the remote scp process that we want to bail out immediately
+	defer sess.CloseStdin()
+
+	_, err := fmt.Fprintln(sess.Stdin(), "C"+mode, size, filepath.Base(dest))
 	if err != nil {
-		return fmt.Errorf("failed to open source file: %s", err)
+		return fmt.Errorf("failed to create remote file: %s", err)
 	}
-	stat, err := f.Stat()
+
+	_, err = io.Copy(sess.Stdin(), src)
 	if err != nil {
-		return fmt.Errorf("failed to get source file info: %s", err)
+		return fmt.Errorf("failed to write remote file contents: %s", err)
 	}
 
-	wg := sync.WaitGroup{}
-	wg.Add(1)
-
-	errCh := make(chan error, 2)
-
-	w, err := sess.StdinPipe()
-	defer w.Close()
-
-	// Start the scp receiver on the remote host
-	err = sess.Start("/usr/bin/scp -qt " + filepath.Dir(dest))
+	_, err = fmt.Fprint(sess.Stdin(), "\x00")
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to close remote file: %s", err)
 	}
 
-	go func() {
-		defer wg.Done()
-
-		_, err = fmt.Fprintln(w, "C"+mode, stat.Size(), filepath.Base(dest))
-		if err != nil {
-			errCh <- err
-			return
-		}
-
-		_, err = io.Copy(w, f)
-		if err != nil {
-			errCh <- err
-			return
-		}
-
-		_, err = fmt.Fprint(w, "\x00")
-		if err != nil {
-			errCh <- err
-			return
-		}
-	}()
-
-	if waitTimeout(&wg, timeout) {
-		return errors.New("timeout when upload files")
-	}
-	close(errCh)
-	for err := range errCh {
-		if err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
 func (a *FileAction) Run(ctx context.Context, client *ssh.Client, config Config) error {
-	err := SshExec(ctx, client, func(sess *ssh.Session) error {
+	err := SshExec(ctx, client, false, func(sess *Session) (error, *errgroup.Group) {
+		f, err := os.Open(filepath.Join(config.PlaybookFolder, a.Src))
+		if err != nil {
+			return fmt.Errorf("failed to open source file: %s", err), nil
+		}
+		stat, err := f.Stat()
+		if err != nil {
+			return fmt.Errorf("failed to get source file info: %s", err), nil
+		}
+
+		// Start scp receiver on the remote host
+		err = sess.Start("scp -qt " + filepath.Dir(a.Dest))
+		if err != nil {
+			return fmt.Errorf("failed to start scp receiver: %s", err), nil
+		}
 
 		mode := a.Mode
 		if mode == "" {
 			mode = "0644"
 		}
 
-		return copyFile(
-			sess,
-			config.ExecTimeout,
-			filepath.Join(config.PlaybookFolder, a.Src),
-			a.Dest,
-			mode,
-		)
+		var g errgroup.Group
+		g.Go(func() error {
+			return copyFile(
+				sess,
+				config.ExecTimeout,
+				f,
+				stat.Size(),
+				a.Dest,
+				mode,
+			)
+		})
+		return nil, &g
 	})
 	if err != nil {
 		return fmt.Errorf("failed to copy file %q: %s", a.Src, err)
 	}
 
 	if a.Owner != "" && a.Group != "" {
-		err = SshExec(ctx, client, func(sess *ssh.Session) error {
+		err = SshExec(ctx, client, true, func(sess *Session) (error, *errgroup.Group) {
 			return sess.Start(
 				fmt.Sprintf("chown %s:%s %s", a.Owner, a.Group, a.Dest),
-			)
+			), nil
 		})
 		if err != nil {
 			return fmt.Errorf(
@@ -257,8 +305,8 @@ func (*AptAction) GetType() string {
 
 func (a *AptAction) Run(ctx context.Context, client *ssh.Client, config Config) error {
 	// Update package lists first
-	err := SshExec(ctx, client, func(sess *ssh.Session) error {
-		return sess.Start("apt-get update")
+	err := SshExec(ctx, client, true, func(sess *Session) (error, *errgroup.Group) {
+		return sess.Start("apt-get update"), nil
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update package lists: %s", err)
@@ -266,8 +314,8 @@ func (a *AptAction) Run(ctx context.Context, client *ssh.Client, config Config) 
 
 	// Install the requested packages
 	for _, pkg := range a.Pkg {
-		err = SshExec(ctx, client, func(sess *ssh.Session) error {
-			return sess.Start(fmt.Sprintf("apt-get install -y %s", pkg))
+		err = SshExec(ctx, client, true, func(sess *Session) (error, *errgroup.Group) {
+			return sess.Start(fmt.Sprintf("apt-get install -y %s", pkg)), nil
 		})
 		if err != nil {
 			return fmt.Errorf("failed to install package %q: %s", pkg, err)
@@ -287,8 +335,8 @@ func (*ServiceAction) GetType() string {
 }
 
 func (a *ServiceAction) Run(ctx context.Context, client *ssh.Client, config Config) error {
-	return SshExec(ctx, client, func(sess *ssh.Session) error {
-		return sess.Start(fmt.Sprintf("service %s %s", a.Name, a.State))
+	return SshExec(ctx, client, true, func(sess *Session) (error, *errgroup.Group) {
+		return sess.Start(fmt.Sprintf("service %s %s", a.Name, a.State)), nil
 	})
 }
 
@@ -299,8 +347,8 @@ func (*ShellAction) GetType() string {
 }
 
 func (a *ShellAction) Run(ctx context.Context, client *ssh.Client, config Config) error {
-	return SshExec(ctx, client, func(sess *ssh.Session) error {
-		return sess.Start(string(*a))
+	return SshExec(ctx, client, true, func(sess *Session) (error, *errgroup.Group) {
+		return sess.Start(string(*a)), nil
 	})
 }
 
