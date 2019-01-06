@@ -32,14 +32,19 @@ type Config struct {
 }
 
 type Server struct {
-	Address     string
+	Host        string
+	Port        uint
 	Username    string
 	Password    string
 	playbookErr error
 }
 
-func (s *Server) String() string {
-	return s.Address
+func (s *Server) GetAddress() string {
+	address := s.Host + ":22"
+	if s.Port != 0 {
+		address = fmt.Sprintf("%s:%d", s.Host, s.Port)
+	}
+	return address
 }
 
 type Connection struct {
@@ -54,10 +59,10 @@ func (i Inventory) getAllServers(predFn func(*Server) bool) []string {
 	for _, s := range i {
 		if predFn != nil {
 			if predFn(s) {
-				servers = append(servers, s.Address)
+				servers = append(servers, s.GetAddress())
 			}
 		} else {
-			servers = append(servers, s.Address)
+			servers = append(servers, s.GetAddress())
 		}
 	}
 
@@ -478,7 +483,7 @@ func RunPlaybook(ctx context.Context, wg *sync.WaitGroup, conn *Connection, conf
 	for idx, task := range playbook.Tasks {
 		log.Infof(
 			"Runing task [%d/%d] on %q: %s", idx+1,
-			len(playbook.Tasks), conn.Server.Address, task.Name,
+			len(playbook.Tasks), conn.Server.GetAddress(), task.Name,
 		)
 
 		for _, a := range task.Actions {
@@ -488,7 +493,7 @@ func RunPlaybook(ctx context.Context, wg *sync.WaitGroup, conn *Connection, conf
 				// rerun on this host.
 				log.Warnf(
 					"Failed to run action %q on %q: %s",
-					a.GetType(), conn.Server.Address, err,
+					a.GetType(), conn.Server.GetAddress(), err,
 				)
 
 				conn.Server.playbookErr = err
@@ -510,7 +515,7 @@ func connectServer(server *Server, timeout time.Duration) (*Connection, error) {
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 	}
 
-	client, err := ssh.Dial("tcp", server.Address, sshConfig)
+	client, err := ssh.Dial("tcp", server.GetAddress(), sshConfig)
 	if err != nil {
 		return nil, fmt.Errorf("dial error: %s", err)
 	}
@@ -534,7 +539,7 @@ func Run(ctx context.Context, config Config, playbook *Playbook, inventory Inven
 		for _, server := range inventory[start:end] {
 			client, err := connectServer(server, config.ConnectTimeout)
 			if err != nil {
-				err = fmt.Errorf("Failed to connect to server %q: %s", server.Address, err)
+				err = fmt.Errorf("Failed to connect to server %q: %s", server.GetAddress(), err)
 				server.playbookErr = err
 				log.Warn(err)
 				continue
@@ -559,8 +564,8 @@ func Run(ctx context.Context, config Config, playbook *Playbook, inventory Inven
 			err := conn.Client.Close()
 			if err != nil {
 				log.Warnf(
-					"Failed to close connection to server %q: %s",
-					conn.Server.Address, err,
+					"Failed to close ssh connection to server %q: %s",
+					conn.Server.GetAddress(), err,
 				)
 			}
 		}
@@ -629,10 +634,15 @@ func main() {
 	ctx := InitGracefulStop()
 
 	Run(ctx, config, playbook, inventory)
-	log.Infof("Playbook ran successfully on servers: %s", strings.Join(inventory.getAllCompletedServers(), ", "))
-	failedServers := inventory.getAllFailedServers()
-	if len(failedServers) > 0 {
-		log.Warnf("Playbook failed on servers: %s", strings.Join(failedServers, ", "))
+
+	completed := inventory.getAllCompletedServers()
+	if len(completed) > 0 {
+		log.Infof("Playbook ran successfully on servers: %s", strings.Join(completed, ", "))
+	}
+
+	failed := inventory.getAllFailedServers()
+	if len(failed) > 0 {
+		log.Errorf("Playbook failed on servers: %s", strings.Join(failed, ", "))
 	}
 
 	select {
