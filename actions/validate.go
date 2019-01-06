@@ -66,7 +66,7 @@ func (a *ValidateAction) Run(ctx context.Context, conn *connection.Connection, _
 
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
-		return fmt.Errorf("failed to create http request", a)
+		return fmt.Errorf("failed to create http request: %s", err)
 	}
 
 	// Try to run and validate the request several times
