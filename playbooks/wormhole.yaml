@@ -33,3 +33,13 @@
     owner: root
     group: root
     mode:  "0644"
+
+- name: Validate host
+  validate:
+    scheme:       http
+    port:         80
+    url_path:     "/"
+    retries:      3
+    timeout:      3s
+    status_code:  200
+    body_content: "Hello, world!"

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -45,11 +47,6 @@ func (s *Server) GetAddress() string {
 		address = fmt.Sprintf("%s:%d", s.Host, s.Port)
 	}
 	return address
-}
-
-type Connection struct {
-	Server *Server
-	Client *ssh.Client
 }
 
 type Inventory []*Server
@@ -204,8 +201,36 @@ func newSession(ctx context.Context, client *ssh.Client, withTerminal bool) (*Se
 	return &sess, nil
 }
 
-func SshExec(ctx context.Context, client *ssh.Client, withTerminal bool, fn func(*Session) (error, *errgroup.Group)) error {
-	sess, err := newSession(ctx, client, withTerminal)
+type Connection struct {
+	Server *Server
+	client *ssh.Client
+}
+
+func (conn *Connection) Close() error {
+	return conn.client.Close()
+}
+
+func NewConnection(server *Server, timeout time.Duration) (*Connection, error) {
+	sshConfig := &ssh.ClientConfig{
+		User: server.Username,
+		Auth: []ssh.AuthMethod{
+			ssh.Password(server.Password),
+		},
+		Timeout: timeout,
+		// TODO: Be stricter about security
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	}
+
+	client, err := ssh.Dial("tcp", server.GetAddress(), sshConfig)
+	if err != nil {
+		return nil, fmt.Errorf("dial error: %s", err)
+	}
+
+	return &Connection{Server: server, client: client}, nil
+}
+
+func (conn *Connection) Exec(ctx context.Context, withTerminal bool, fn func(*Session) (error, *errgroup.Group)) error {
+	sess, err := newSession(ctx, conn.client, withTerminal)
 	if err != nil {
 		fmt.Errorf("failed to create new session: %s", err)
 	}
@@ -242,7 +267,7 @@ func SshExec(ctx context.Context, client *ssh.Client, withTerminal bool, fn func
 
 type Action interface {
 	GetType() string
-	Run(context.Context, *ssh.Client, Config) error
+	Run(context.Context, *Connection, Config) error
 }
 
 type FileAction struct {
@@ -281,8 +306,8 @@ func copyFile(sess *Session, timeout time.Duration, src io.Reader, size int64, d
 	return nil
 }
 
-func (a *FileAction) Run(ctx context.Context, client *ssh.Client, config Config) error {
-	err := SshExec(ctx, client, false, func(sess *Session) (error, *errgroup.Group) {
+func (a *FileAction) Run(ctx context.Context, conn *Connection, config Config) error {
+	err := conn.Exec(ctx, false, func(sess *Session) (error, *errgroup.Group) {
 		f, err := os.Open(filepath.Join(config.PlaybookFolder, a.Src))
 		if err != nil {
 			return fmt.Errorf("failed to open source file: %s", err), nil
@@ -321,7 +346,7 @@ func (a *FileAction) Run(ctx context.Context, client *ssh.Client, config Config)
 	}
 
 	if a.Owner != "" && a.Group != "" {
-		err = SshExec(ctx, client, true, func(sess *Session) (error, *errgroup.Group) {
+		err = conn.Exec(ctx, true, func(sess *Session) (error, *errgroup.Group) {
 			return sess.Start(
 				fmt.Sprintf("chown %s:%s %s", a.Owner, a.Group, a.Dest),
 			), nil
@@ -346,9 +371,9 @@ func (*AptAction) GetType() string {
 	return "apt"
 }
 
-func (a *AptAction) Run(ctx context.Context, client *ssh.Client, config Config) error {
+func (a *AptAction) Run(ctx context.Context, conn *Connection, config Config) error {
 	// Update package lists first
-	err := SshExec(ctx, client, true, func(sess *Session) (error, *errgroup.Group) {
+	err := conn.Exec(ctx, true, func(sess *Session) (error, *errgroup.Group) {
 		return sess.Start("apt-get update"), nil
 	})
 	if err != nil {
@@ -357,7 +382,7 @@ func (a *AptAction) Run(ctx context.Context, client *ssh.Client, config Config) 
 
 	// Install the requested packages
 	for _, pkg := range a.Pkg {
-		err = SshExec(ctx, client, true, func(sess *Session) (error, *errgroup.Group) {
+		err = conn.Exec(ctx, true, func(sess *Session) (error, *errgroup.Group) {
 			return sess.Start(fmt.Sprintf("apt-get install -y %s", pkg)), nil
 		})
 		if err != nil {
@@ -377,8 +402,8 @@ func (*ServiceAction) GetType() string {
 	return "service"
 }
 
-func (a *ServiceAction) Run(ctx context.Context, client *ssh.Client, config Config) error {
-	return SshExec(ctx, client, true, func(sess *Session) (error, *errgroup.Group) {
+func (a *ServiceAction) Run(ctx context.Context, conn *Connection, config Config) error {
+	return conn.Exec(ctx, true, func(sess *Session) (error, *errgroup.Group) {
 		return sess.Start(fmt.Sprintf("service %s %s", a.Name, a.State)), nil
 	})
 }
@@ -389,10 +414,77 @@ func (*ShellAction) GetType() string {
 	return "shell"
 }
 
-func (a *ShellAction) Run(ctx context.Context, client *ssh.Client, config Config) error {
-	return SshExec(ctx, client, true, func(sess *Session) (error, *errgroup.Group) {
+func (a *ShellAction) Run(ctx context.Context, conn *Connection, config Config) error {
+	return conn.Exec(ctx, true, func(sess *Session) (error, *errgroup.Group) {
 		return sess.Start(string(*a)), nil
 	})
+}
+
+type ValidateAction struct {
+	Scheme      string
+	Port        uint
+	UrlPath     string `mapstructure:"url_path"`
+	Retries     uint
+	Timeout     string
+	StatusCode  int    `mapstructure:"status_code"`
+	BodyContent string `mapstructure:"body_content"`
+}
+
+func (*ValidateAction) GetType() string {
+	return "validate"
+}
+
+func (a *ValidateAction) validate(ctx context.Context, req *http.Request) error {
+	// TODO: Fix a.Timeout parsing
+	ctx, timeoutFunc := context.WithTimeout(ctx, 3*time.Second)
+	defer timeoutFunc()
+
+	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
+	if err != nil {
+		return fmt.Errorf("failed to execute request: %s", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != a.StatusCode {
+		return fmt.Errorf("expected status %d but got %d instead", a.StatusCode, resp.StatusCode)
+	}
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %s", err)
+	}
+	if !strings.Contains(string(body), a.BodyContent) {
+		return errors.New("response does not contain expected content")
+	}
+
+	return nil
+}
+
+func (a *ValidateAction) Run(ctx context.Context, conn *Connection, config Config) error {
+	host := conn.Server.Host
+	if a.Port != 0 {
+		host = fmt.Sprintf("%s:%d", host, a.Port)
+	}
+	u := url.URL{
+		Scheme: a.Scheme,
+		Host:   host,
+		Path:   a.UrlPath,
+	}
+
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return fmt.Errorf("failed to create http request", a)
+	}
+
+	// Try to run and validate the request several times
+	for i := uint(0); i < a.Retries; i++ {
+		err = a.validate(ctx, req)
+		if err == nil {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("failed to validate %q after %d retries: %s", u.String(), a.Retries, err)
 }
 
 type Task struct {
@@ -415,6 +507,8 @@ func getActionByName(name string) (Action, error) {
 		return new(ServiceAction), nil
 	case "shell":
 		return new(ShellAction), nil
+	case "validate":
+		return new(ValidateAction), nil
 	default:
 		return nil, fmt.Errorf("unrecognised action %q", name)
 	}
@@ -487,7 +581,7 @@ func RunPlaybook(ctx context.Context, wg *sync.WaitGroup, conn *Connection, conf
 		)
 
 		for _, a := range task.Actions {
-			err := a.Run(ctx, conn.Client, config)
+			err := a.Run(ctx, conn, config)
 			if err != nil {
 				// Something went wrong and the playbook needs to be
 				// rerun on this host.
@@ -504,25 +598,6 @@ func RunPlaybook(ctx context.Context, wg *sync.WaitGroup, conn *Connection, conf
 	}
 }
 
-func connectServer(server *Server, timeout time.Duration) (*Connection, error) {
-	sshConfig := &ssh.ClientConfig{
-		User: server.Username,
-		Auth: []ssh.AuthMethod{
-			ssh.Password(server.Password),
-		},
-		Timeout: timeout,
-		// TODO: Be stricter about security
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-	}
-
-	client, err := ssh.Dial("tcp", server.GetAddress(), sshConfig)
-	if err != nil {
-		return nil, fmt.Errorf("dial error: %s", err)
-	}
-
-	return &Connection{Server: server, Client: client}, nil
-}
-
 func Run(ctx context.Context, config Config, playbook *Playbook, inventory Inventory) {
 	for start := 0; start < len(inventory); start += config.MaxConcurrentConnections {
 		end := start + config.MaxConcurrentConnections
@@ -537,7 +612,7 @@ func Run(ctx context.Context, config Config, playbook *Playbook, inventory Inven
 		// Open a ssh session to each server in the current batch
 		var connections []*Connection
 		for _, server := range inventory[start:end] {
-			client, err := connectServer(server, config.ConnectTimeout)
+			client, err := NewConnection(server, config.ConnectTimeout)
 			if err != nil {
 				err = fmt.Errorf("Failed to connect to server %q: %s", server.GetAddress(), err)
 				server.playbookErr = err
@@ -561,7 +636,7 @@ func Run(ctx context.Context, config Config, playbook *Playbook, inventory Inven
 
 		// Close ssh clients
 		for _, conn := range connections {
-			err := conn.Client.Close()
+			err := conn.Close()
 			if err != nil {
 				log.Warnf(
 					"Failed to close ssh connection to server %q: %s",
