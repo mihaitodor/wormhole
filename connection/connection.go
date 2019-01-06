@@ -133,7 +133,7 @@ func (conn *Connection) Close() error {
 func (conn *Connection) Exec(ctx context.Context, withTerminal bool, fn func(*Session) (error, *errgroup.Group)) error {
 	sess, err := newSession(ctx, conn.client, withTerminal)
 	if err != nil {
-		fmt.Errorf("failed to create new session: %s", err)
+		return fmt.Errorf("failed to create new session: %s", err)
 	}
 	// TODO: Log error
 	defer sess.close()
