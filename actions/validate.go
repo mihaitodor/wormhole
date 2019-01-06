@@ -70,7 +70,11 @@ func (a *ValidateAction) Run(ctx context.Context, conn *connection.Connection, _
 	}
 
 	// Try to run and validate the request several times
-	for i := uint(0); i < a.Retries; i++ {
+	retries := 1
+	if a.Retries > 0 {
+		retries = int(a.Retries)
+	}
+	for i := 0; i < retries; i++ {
 		err = a.validate(ctx, req)
 		if err == nil {
 			return nil
