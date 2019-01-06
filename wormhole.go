@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -31,17 +32,49 @@ type Config struct {
 }
 
 type Server struct {
-	Address  string
-	Username string
-	Password string
+	Address     string
+	Username    string
+	Password    string
+	playbookErr error
+}
+
+func (s *Server) String() string {
+	return s.Address
 }
 
 type Connection struct {
-	Server Server
+	Server *Server
 	Client *ssh.Client
 }
 
-type Inventory []Server
+type Inventory []*Server
+
+func (i Inventory) getAllServers(predFn func(*Server) bool) []string {
+	var servers []string
+	for _, s := range i {
+		if predFn != nil {
+			if predFn(s) {
+				servers = append(servers, s.Address)
+			}
+		} else {
+			servers = append(servers, s.Address)
+		}
+	}
+
+	return servers
+}
+
+func (i Inventory) getAllCompletedServers() []string {
+	return i.getAllServers(func(s *Server) bool {
+		return s.playbookErr == nil
+	})
+}
+
+func (i Inventory) getAllFailedServers() []string {
+	return i.getAllServers(func(s *Server) bool {
+		return s.playbookErr != nil
+	})
+}
 
 func LoadInventory(inventoryFile string) (Inventory, error) {
 	fileContents, err := ioutil.ReadFile(inventoryFile)
@@ -154,7 +187,10 @@ func newSession(ctx context.Context, client *ssh.Client, withTerminal bool) (*Se
 					log.Warnf("Failed to send SIGINT to the remote process: %s", err)
 				}
 			}
-			sess.CloseStdin()
+			err := sess.CloseStdin()
+			if err != nil {
+				log.Warnf("Failed to close session stdin: %s", err)
+			}
 		case <-quitChan:
 			// Stop the signal handler when the task completes
 		}
@@ -168,6 +204,7 @@ func SshExec(ctx context.Context, client *ssh.Client, withTerminal bool, fn func
 	if err != nil {
 		fmt.Errorf("failed to create new session: %s", err)
 	}
+	// TODO: Log error
 	defer sess.close()
 
 	prepErr, g := fn(sess)
@@ -218,6 +255,7 @@ func (*FileAction) GetType() string {
 // Copies the contents of src to dest on a remote host
 func copyFile(sess *Session, timeout time.Duration, src io.Reader, size int64, dest, mode string) error {
 	// Instruct the remote scp process that we want to bail out immediately
+	// TODO: Log error
 	defer sess.CloseStdin()
 
 	_, err := fmt.Fprintln(sess.Stdin(), "C"+mode, size, filepath.Base(dest))
@@ -446,19 +484,22 @@ func RunPlaybook(ctx context.Context, wg *sync.WaitGroup, conn *Connection, conf
 		for _, a := range task.Actions {
 			err := a.Run(ctx, conn.Client, config)
 			if err != nil {
-				// Something went wrong. The whole playbook
-				// needs to be rerun on this host.
+				// Something went wrong and the playbook needs to be
+				// rerun on this host.
 				log.Warnf(
 					"Failed to run action %q on %q: %s",
 					a.GetType(), conn.Server.Address, err,
 				)
+
+				conn.Server.playbookErr = err
+
 				return
 			}
 		}
 	}
 }
 
-func connectServer(server Server, timeout time.Duration) (*Connection, error) {
+func connectServer(server *Server, timeout time.Duration) (*Connection, error) {
 	sshConfig := &ssh.ClientConfig{
 		User: server.Username,
 		Auth: []ssh.AuthMethod{
@@ -477,19 +518,25 @@ func connectServer(server Server, timeout time.Duration) (*Connection, error) {
 	return &Connection{Server: server, Client: client}, nil
 }
 
-func Run(ctx context.Context, config Config, playbook *Playbook, inventory Inventory) error {
+func Run(ctx context.Context, config Config, playbook *Playbook, inventory Inventory) {
 	for start := 0; start < len(inventory); start += config.MaxConcurrentConnections {
 		end := start + config.MaxConcurrentConnections
 		if end > len(inventory) {
 			end = len(inventory)
 		}
 
+		log.Infof("Running playbook on servers: %s",
+			strings.Join(inventory[start:end].getAllServers(nil), ", "),
+		)
+
 		// Open a ssh session to each server in the current batch
 		var connections []*Connection
 		for _, server := range inventory[start:end] {
 			client, err := connectServer(server, config.ConnectTimeout)
 			if err != nil {
-				log.Warnf("Failed to connect to server %q: %s", server.Address, err)
+				err = fmt.Errorf("Failed to connect to server %q: %s", server.Address, err)
+				server.playbookErr = err
+				log.Warn(err)
 				continue
 			}
 
@@ -518,8 +565,6 @@ func Run(ctx context.Context, config Config, playbook *Playbook, inventory Inven
 			}
 		}
 	}
-
-	return nil
 }
 
 func InitConfing() Config {
@@ -583,9 +628,11 @@ func main() {
 
 	ctx := InitGracefulStop()
 
-	err = Run(ctx, config, playbook, inventory)
-	if err != nil {
-		log.Fatalf("Failed to run playbook: %s", err)
+	Run(ctx, config, playbook, inventory)
+	log.Infof("Playbook ran successfully on servers: %s", strings.Join(inventory.getAllCompletedServers(), ", "))
+	failedServers := inventory.getAllFailedServers()
+	if len(failedServers) > 0 {
+		log.Warnf("Playbook failed on servers: %s", strings.Join(failedServers, ", "))
 	}
 
 	select {
