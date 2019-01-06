@@ -382,7 +382,7 @@ func (a *AptAction) Run(ctx context.Context, conn *Connection, config Config) er
 	// Install the requested packages
 	for _, pkg := range a.Pkg {
 		err = conn.Exec(ctx, true, func(sess *Session) (error, *errgroup.Group) {
-			return sess.Start(fmt.Sprintf("apt-get install -y %s", pkg)), nil
+			return sess.Start(fmt.Sprintf("apt-get %s -y %s", a.State, pkg)), nil
 		})
 		if err != nil {
 			return fmt.Errorf("failed to install package %q: %s", pkg, err)

@@ -2,7 +2,7 @@
 
 - name: Install Apache and PHP
   apt:
-    state: present
+    state: install
     pkg:
       - apache2
       - php5
