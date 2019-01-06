@@ -16,7 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mitchellh/mapstructure"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/sync/errgroup"
@@ -423,11 +422,11 @@ func (a *ShellAction) Run(ctx context.Context, conn *Connection, config Config) 
 type ValidateAction struct {
 	Scheme      string
 	Port        uint
-	UrlPath     string `mapstructure:"url_path"`
+	UrlPath     string `yaml:"url_path"`
 	Retries     uint
-	Timeout     string
-	StatusCode  int    `mapstructure:"status_code"`
-	BodyContent string `mapstructure:"body_content"`
+	Timeout     time.Duration
+	StatusCode  int    `yaml:"status_code"`
+	BodyContent string `yaml:"body_content"`
 }
 
 func (*ValidateAction) GetType() string {
@@ -435,8 +434,7 @@ func (*ValidateAction) GetType() string {
 }
 
 func (a *ValidateAction) validate(ctx context.Context, req *http.Request) error {
-	// TODO: Fix a.Timeout parsing
-	ctx, timeoutFunc := context.WithTimeout(ctx, 3*time.Second)
+	ctx, timeoutFunc := context.WithTimeout(ctx, a.Timeout)
 	defer timeoutFunc()
 
 	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
@@ -497,26 +495,94 @@ type Playbook struct {
 	Tasks []*Task
 }
 
-func getActionByName(name string) (Action, error) {
+type ActionContainer interface {
+	GetAction() Action
+	IsNil() bool
+}
+
+type FileActionContainer struct {
+	Action *FileAction `yaml:"file"`
+}
+
+func (f *FileActionContainer) GetAction() Action {
+	return f.Action
+}
+
+func (f *FileActionContainer) IsNil() bool {
+	return f.Action == nil
+}
+
+type AptActionContainer struct {
+	Action *AptAction `yaml:"apt"`
+}
+
+func (f *AptActionContainer) GetAction() Action {
+	return f.Action
+}
+
+func (f *AptActionContainer) IsNil() bool {
+	return f.Action == nil
+}
+
+type ServiceActionContainer struct {
+	Action *ServiceAction `yaml:"service"`
+}
+
+func (f *ServiceActionContainer) GetAction() Action {
+	return f.Action
+}
+
+func (f *ServiceActionContainer) IsNil() bool {
+	return f.Action == nil
+}
+
+type ShellActionContainer struct {
+	Action *ShellAction `yaml:"shell"`
+}
+
+func (f *ShellActionContainer) GetAction() Action {
+	return f.Action
+}
+
+func (f *ShellActionContainer) IsNil() bool {
+	return f.Action == nil
+}
+
+type ValidateActionContainer struct {
+	Action *ValidateAction `yaml:"validate"`
+}
+
+func (f *ValidateActionContainer) GetAction() Action {
+	return f.Action
+}
+
+func (f *ValidateActionContainer) IsNil() bool {
+	return f.Action == nil
+}
+
+// getActionContainerByName returns a struct containing a pointer
+// to a specific action to be unmarshaled by the YAML parser
+// TODO: Find a way to implement this without redundant methods
+// on the action containers
+func getActionContainerByName(name string) (ActionContainer, error) {
 	switch name {
 	case "file":
-		return new(FileAction), nil
+		return &FileActionContainer{}, nil
 	case "apt":
-		return new(AptAction), nil
+		return &AptActionContainer{}, nil
 	case "service":
-		return new(ServiceAction), nil
+		return &ServiceActionContainer{}, nil
 	case "shell":
-		return new(ShellAction), nil
+		return &ShellActionContainer{}, nil
 	case "validate":
-		return new(ValidateAction), nil
+		return &ValidateActionContainer{}, nil
 	default:
 		return nil, fmt.Errorf("unrecognised action %q", name)
 	}
 }
 
 // UnmarshalYAML unmarshals a task and populates known actions into their
-// specific objects using mapstructure. This is not a very efficient
-// way of doing it, due to the double parsing.
+// specific objects.
 func (t *Task) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	var rawTask map[string]interface{}
 	err := unmarshal(&rawTask)
@@ -529,28 +595,32 @@ func (t *Task) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		return errors.New("missing 'name' field")
 	}
 
-	name, ok := rawName.(string)
-	if !ok || name == "" {
+	taskName, ok := rawName.(string)
+	if !ok || taskName == "" {
 		return errors.New("'name' field needs to be a non-empty string")
 	}
 
-	t.Name = name
+	t.Name = taskName
 
 	// Delete name item, since it doesn't represent an action
 	delete(rawTask, "name")
 
-	for actionName, rawAction := range rawTask {
-		action, err := getActionByName(actionName)
+	for actionName := range rawTask {
+		actionContainer, err := getActionContainerByName(actionName)
 		if err != nil {
 			return fmt.Errorf("failed to instantiate action %q: %s", actionName, err)
 		}
 
-		err = mapstructure.Decode(rawAction, action)
+		err = unmarshal(actionContainer)
 		if err != nil {
-			return fmt.Errorf("failed to decode action %q: %s", actionName, err)
+			return fmt.Errorf("failed to unmarshal task: %s", err)
 		}
 
-		t.Actions = append(t.Actions, action)
+		if actionContainer.IsNil() {
+			return fmt.Errorf("task %q contains empty action %q", t.Name, actionName)
+		}
+
+		t.Actions = append(t.Actions, actionContainer.GetAction())
 	}
 
 	return nil
