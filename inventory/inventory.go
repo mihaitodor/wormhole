@@ -27,6 +27,10 @@ func (s *Server) SetError(err error) {
 	s.playbookErr = err
 }
 
+func (s *Server) GetError() error {
+	return s.playbookErr
+}
+
 type Inventory []*Server
 
 func (i Inventory) GetAllServers(predFn func(*Server) bool) []string {

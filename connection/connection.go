@@ -132,6 +132,7 @@ type Connection interface {
 	Exec(context.Context, bool, ExecCallbackFunc) error
 	GetAddress() string
 	GetHost() string
+	// TODO: Redesign this to avoid mutating state
 	SetError(error)
 }
 
@@ -152,8 +153,8 @@ func (conn *connection) Exec(ctx context.Context, withTerminal bool, fn ExecCall
 	// TODO: Log error
 	defer sess.close()
 
-	prepErr, g := fn(sess)
-	if prepErr != nil {
+	err, errGroup := fn(sess)
+	if err != nil {
 		return fmt.Errorf("failed to start the ssh command: %s", err)
 	}
 
@@ -161,12 +162,12 @@ func (conn *connection) Exec(ctx context.Context, withTerminal bool, fn ExecCall
 	err = sess.wait()
 	if err != nil {
 		// Check the async operation (if there is any) for the error
-		// cause before returning it
+		// cause before returning
 		err = fmt.Errorf("failed ssh command: %s", err)
 	}
 
-	if g != nil {
-		asyncErr := g.Wait()
+	if errGroup != nil {
+		asyncErr := errGroup.Wait()
 		if asyncErr != nil {
 			err = fmt.Errorf("%s: failed async ssh operation: %s", err, asyncErr)
 		}
