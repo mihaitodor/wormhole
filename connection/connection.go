@@ -113,6 +113,10 @@ func newSession(ctx context.Context, client *ssh.Client, withTerminal bool) (*Se
 			if err != nil {
 				log.Warnf("Failed to close session stdin: %s", err)
 			}
+			err = ctx.Err()
+			if err == context.DeadlineExceeded {
+				log.Warnf("Context deadline exceeeded")
+			}
 		case <-quitChan:
 			// Stop the signal handler when the task completes
 		}

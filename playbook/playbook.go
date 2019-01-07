@@ -34,7 +34,10 @@ func (p *Playbook) Run(ctx context.Context, wg *sync.WaitGroup, conn *connection
 		)
 
 		for _, a := range task.Actions {
+			// Make sure we cancel the action if ExecTimeout is exceeded
+			ctx, cancel := context.WithTimeout(ctx, conf.ExecTimeout)
 			err := a.Run(ctx, conn, conf)
+			cancel()
 			if err != nil {
 				// Something went wrong and the playbook needs to be
 				// rerun on this host.

@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/mihaitodor/wormhole/config"
 	"github.com/mihaitodor/wormhole/connection"
@@ -23,7 +22,7 @@ type FileAction struct {
 }
 
 // Copies the contents of src to dest on a remote host
-func copyFile(sess *connection.Session, timeout time.Duration, src io.Reader, size int64, dest, mode string) error {
+func copyFile(sess *connection.Session, src io.Reader, size int64, dest, mode string) error {
 	// Instruct the remote scp process that we want to bail out immediately
 	// TODO: Log error
 	defer sess.CloseStdin()
@@ -72,7 +71,6 @@ func (a *FileAction) Run(ctx context.Context, conn *connection.Connection, conf 
 		g.Go(func() error {
 			return copyFile(
 				sess,
-				conf.ExecTimeout,
 				f,
 				stat.Size(),
 				a.Dest,
