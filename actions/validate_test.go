@@ -27,7 +27,7 @@ func (c *dummyConnection) GetHost() string  { return c.Server.Host }
 func (*dummyConnection) SetError(error)     {}
 
 func Test_Run(t *testing.T) {
-	Convey("ValidateAction.Run()", t, func() {
+	Convey("ValidateAction.Run()", t, func(c C) {
 		bodyContent := "test body"
 		executedRetries := 0
 		returnError := false
@@ -40,7 +40,8 @@ func Test_Run(t *testing.T) {
 			}
 
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(bodyContent))
+			_, err := w.Write([]byte(bodyContent))
+			c.So(err, ShouldBeNil)
 		}))
 
 		u, err := url.Parse(ts.URL)

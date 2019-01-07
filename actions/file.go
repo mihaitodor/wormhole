@@ -9,6 +9,7 @@ import (
 
 	"github.com/mihaitodor/wormhole/config"
 	"github.com/mihaitodor/wormhole/connection"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -25,7 +26,12 @@ type FileAction struct {
 func copyFile(sess *connection.Session, src io.Reader, size int64, dest, mode string) error {
 	// Instruct the remote scp process that we want to bail out immediately
 	// TODO: Log error
-	defer sess.CloseStdin()
+	defer func() {
+		err := sess.CloseStdin()
+		if err != nil {
+			log.Warnf("Failed to close session stdin: %s", err)
+		}
+	}()
 
 	_, err := fmt.Fprintln(sess.Stdin(), "C"+mode, size, filepath.Base(dest))
 	if err != nil {

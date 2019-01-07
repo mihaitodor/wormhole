@@ -32,10 +32,7 @@ func Test_Inventory(t *testing.T) {
 
 		Convey("should return all servers matching custom predicate", func() {
 			servers := i.GetAllServers(func(s *Server) bool {
-				if s.Host != server2.Host {
-					return true
-				}
-				return false
+				return s.Host != server2.Host
 			})
 			So(servers, ShouldHaveLength, 1)
 			So(servers[0], ShouldContainSubstring, server1.Host)
