@@ -75,81 +75,95 @@ type FileActionContainer struct {
 	Action *actions.FileAction `yaml:"file"`
 }
 
-func (f *FileActionContainer) GetAction() actions.Action {
-	return f.Action
+func (ac *FileActionContainer) GetAction() actions.Action {
+	return ac.Action
 }
 
-func (f *FileActionContainer) IsNil() bool {
-	return f.Action == nil
+func (ac *FileActionContainer) IsNil() bool {
+	return ac.Action == nil
 }
 
 type AptActionContainer struct {
 	Action *actions.AptAction `yaml:"apt"`
 }
 
-func (f *AptActionContainer) GetAction() actions.Action {
-	return f.Action
+func (ac *AptActionContainer) GetAction() actions.Action {
+	return ac.Action
 }
 
-func (f *AptActionContainer) IsNil() bool {
-	return f.Action == nil
+func (ac *AptActionContainer) IsNil() bool {
+	return ac.Action == nil
 }
 
 type ServiceActionContainer struct {
 	Action *actions.ServiceAction `yaml:"service"`
 }
 
-func (f *ServiceActionContainer) GetAction() actions.Action {
-	return f.Action
+func (ac *ServiceActionContainer) GetAction() actions.Action {
+	return ac.Action
 }
 
-func (f *ServiceActionContainer) IsNil() bool {
-	return f.Action == nil
+func (ac *ServiceActionContainer) IsNil() bool {
+	return ac.Action == nil
 }
 
 type ShellActionContainer struct {
 	Action *actions.ShellAction `yaml:"shell"`
 }
 
-func (f *ShellActionContainer) GetAction() actions.Action {
-	return f.Action
+func (ac *ShellActionContainer) GetAction() actions.Action {
+	return ac.Action
 }
 
-func (f *ShellActionContainer) IsNil() bool {
-	return f.Action == nil
+func (ac *ShellActionContainer) IsNil() bool {
+	return ac.Action == nil
 }
 
 type ValidateActionContainer struct {
 	Action *actions.ValidateAction `yaml:"validate"`
 }
 
-func (f *ValidateActionContainer) GetAction() actions.Action {
-	return f.Action
+func (ac *ValidateActionContainer) GetAction() actions.Action {
+	return ac.Action
 }
 
-func (f *ValidateActionContainer) IsNil() bool {
-	return f.Action == nil
+func (ac *ValidateActionContainer) IsNil() bool {
+	return ac.Action == nil
 }
 
 // getActionContainerByName returns a struct containing a pointer
 // to a specific action to be unmarshaled by the YAML parser
 // TODO: Find a way to implement this without redundant methods
 // on the action containers
-func getActionContainerByName(name string) (ActionContainer, error) {
+func unmarshalAction(name string, unmarshal func(interface{}) error) (ActionContainer, error) {
+	var ac ActionContainer
 	switch name {
 	case "file":
-		return &FileActionContainer{}, nil
+		ac = &FileActionContainer{}
 	case "apt":
-		return &AptActionContainer{}, nil
+		ac = &AptActionContainer{}
 	case "service":
-		return &ServiceActionContainer{}, nil
+		ac = &ServiceActionContainer{}
 	case "shell":
-		return &ShellActionContainer{}, nil
+		ac = &ShellActionContainer{}
 	case "validate":
-		return &ValidateActionContainer{}, nil
+		ac = &ValidateActionContainer{}
 	default:
-		return nil, fmt.Errorf("unrecognised action %q", name)
+		return nil, errors.New("unrecognised action")
 	}
+
+	err := unmarshal(ac)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal action: %s", err)
+	}
+
+	if ac.IsNil() {
+		return nil, errors.New("empty action")
+	}
+
+	ac.GetAction().SetType(name)
+
+	return ac, nil
 }
 
 // UnmarshalYAML unmarshals a task and populates known actions into their
@@ -177,18 +191,9 @@ func (t *Task) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	delete(rawTask, "name")
 
 	for actionName := range rawTask {
-		actionContainer, err := getActionContainerByName(actionName)
+		actionContainer, err := unmarshalAction(actionName, unmarshal)
 		if err != nil {
-			return fmt.Errorf("failed to instantiate action %q: %s", actionName, err)
-		}
-
-		err = unmarshal(actionContainer)
-		if err != nil {
-			return fmt.Errorf("failed to unmarshal task: %s", err)
-		}
-
-		if actionContainer.IsNil() {
-			return fmt.Errorf("task %q contains empty action %q", t.Name, actionName)
+			return fmt.Errorf("failed to unmarshal action %q from task %q: %s", actionName, t.Name, err)
 		}
 
 		t.Actions = append(t.Actions, actionContainer.GetAction())

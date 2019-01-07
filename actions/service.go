@@ -10,12 +10,9 @@ import (
 )
 
 type ServiceAction struct {
+	ActionBase
 	Name  string
 	State string
-}
-
-func (*ServiceAction) GetType() string {
-	return "service"
 }
 
 func (a *ServiceAction) Run(ctx context.Context, conn *connection.Connection, _ config.Config) error {

@@ -15,6 +15,7 @@ import (
 )
 
 type ValidateAction struct {
+	ActionBase
 	Scheme      string
 	Port        uint
 	UrlPath     string `yaml:"url_path"`
@@ -22,10 +23,6 @@ type ValidateAction struct {
 	Timeout     time.Duration
 	StatusCode  int    `yaml:"status_code"`
 	BodyContent string `yaml:"body_content"`
-}
-
-func (*ValidateAction) GetType() string {
-	return "validate"
 }
 
 func (a *ValidateAction) validate(ctx context.Context, req *http.Request) error {

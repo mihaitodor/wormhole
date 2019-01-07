@@ -14,15 +14,12 @@ import (
 )
 
 type FileAction struct {
+	ActionBase
 	Src   string
 	Dest  string
 	Owner string
 	Group string
 	Mode  string
-}
-
-func (*FileAction) GetType() string {
-	return "file"
 }
 
 // Copies the contents of src to dest on a remote host

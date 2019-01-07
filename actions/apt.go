@@ -10,12 +10,9 @@ import (
 )
 
 type AptAction struct {
+	ActionBase
 	State string
 	Pkg   []string
-}
-
-func (*AptAction) GetType() string {
-	return "apt"
 }
 
 func (a *AptAction) Run(ctx context.Context, conn *connection.Connection, _ config.Config) error {
