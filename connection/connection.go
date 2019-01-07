@@ -115,7 +115,7 @@ func newSession(ctx context.Context, client *ssh.Client, withTerminal bool) (*Se
 			}
 			err = ctx.Err()
 			if err == context.DeadlineExceeded {
-				log.Warnf("Context deadline exceeeded")
+				log.Warnf("Context deadline exceeeded on server: %s", client.RemoteAddr())
 			}
 		case <-quitChan:
 			// Stop the signal handler when the task completes
