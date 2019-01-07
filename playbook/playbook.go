@@ -28,7 +28,7 @@ func (p *Playbook) Run(ctx context.Context, wg *sync.WaitGroup, conn connection.
 
 	for idx, task := range p.Tasks {
 		log.Infof(
-			"Runing task [%d/%d] on %q: %s", idx+1,
+			"Running task [%d/%d] on %q: %s", idx+1,
 			len(p.Tasks), conn.GetAddress(), task.Name,
 		)
 
