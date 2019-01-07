@@ -20,7 +20,6 @@ type Task struct {
 }
 
 type Playbook struct {
-	Name  string
 	Tasks []*Task
 }
 
@@ -200,6 +199,10 @@ func (t *Task) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		}
 
 		t.Actions = append(t.Actions, actionContainer.GetAction())
+	}
+
+	if len(t.Actions) == 0 {
+		return fmt.Errorf("task %q has no actions", t.Name)
 	}
 
 	return nil

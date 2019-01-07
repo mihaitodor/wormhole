@@ -21,7 +21,7 @@ func (a *ShellAction) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	var shell string
 	err := unmarshal(&shell)
 	if err != nil {
-		return fmt.Errorf("failed to unmarshall shell action: %s", err)
+		return fmt.Errorf("failed to unmarshall 'shell' action: %s", err)
 	}
 
 	a.string = shell

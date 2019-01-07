@@ -1,3 +1,5 @@
+---
+
 - host: "gondor"
   port: 2222
   username: isildur

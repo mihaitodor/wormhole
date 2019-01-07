@@ -1,0 +1,5 @@
+---
+
+- name: Test invalid action
+  shell:
+    broken: execute nope

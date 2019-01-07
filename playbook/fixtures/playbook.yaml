@@ -1,0 +1,13 @@
+---
+
+- name: Test apt action
+  apt:
+    state: install
+    pkg:
+      - apache2
+
+- name: Test file and shell actions
+  file:
+    src: files/test.conf
+    dest: /etc/test.conf
+  shell: "echo test > /dev/nul"

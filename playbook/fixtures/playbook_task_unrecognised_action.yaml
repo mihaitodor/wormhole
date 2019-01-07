@@ -1,0 +1,5 @@
+---
+
+- name: Test invalid action
+  dummy:
+    nothing: execute nope
