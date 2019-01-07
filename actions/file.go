@@ -25,7 +25,6 @@ type FileAction struct {
 // Copies the contents of src to dest on a remote host
 func copyFile(sess *connection.Session, src io.Reader, size int64, dest, mode string) error {
 	// Instruct the remote scp process that we want to bail out immediately
-	// TODO: Log error
 	defer func() {
 		err := sess.CloseStdin()
 		if err != nil {

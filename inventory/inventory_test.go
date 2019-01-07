@@ -42,7 +42,7 @@ func Test_Inventory(t *testing.T) {
 	Convey("Inventory.GetAllCompletedServers()", t, func() {
 		server1.SetError(errors.New("hobbits not found"))
 		servers := i.GetAllCompletedServers()
-		Convey("should return all servers without errors", func() {
+		Convey("should return all completed servers", func() {
 			So(servers, ShouldHaveLength, 1)
 			So(servers[0], ShouldContainSubstring, server2.Host)
 		})
@@ -51,7 +51,7 @@ func Test_Inventory(t *testing.T) {
 	Convey("Inventory.GetAllFailedServers()", t, func() {
 		server1.SetError(errors.New("hobbits not found"))
 		servers := i.GetAllFailedServers()
-		Convey("should return all servers without errors", func() {
+		Convey("should return all failed servers", func() {
 			So(servers, ShouldHaveLength, 1)
 			So(servers[0], ShouldContainSubstring, server1.Host)
 		})
