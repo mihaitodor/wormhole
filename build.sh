@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # This script attempts to build and test this project
-# The executable will be written to _build/wormhole
+# The executable will be written to ./wormhole
 
 set -e
 
@@ -20,6 +20,6 @@ export GOROOT="$(pwd)/_build/go"
 export GOPATH="$(pwd)/_build/work"
 export PATH="${GOROOT}/bin:${PATH}"
 
-go build -o _build/wormhole
+go build
 
 go test ./...
