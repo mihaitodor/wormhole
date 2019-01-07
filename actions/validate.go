@@ -50,8 +50,8 @@ func (a *ValidateAction) validate(ctx context.Context, req *http.Request) error 
 	return nil
 }
 
-func (a *ValidateAction) Run(ctx context.Context, conn *connection.Connection, _ config.Config) error {
-	host := conn.Server.Host
+func (a *ValidateAction) Run(ctx context.Context, conn connection.Connection, _ config.Config) error {
+	host := conn.GetHost()
 	if a.Port != 0 {
 		host = fmt.Sprintf("%s:%d", host, a.Port)
 	}

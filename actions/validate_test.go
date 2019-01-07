@@ -14,6 +14,18 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+type dummyConnection struct {
+	Server *inventory.Server
+}
+
+func (*dummyConnection) Close() error { return nil }
+func (*dummyConnection) Exec(context.Context, bool, connection.ExecCallbackFunc) error {
+	return nil
+}
+func (*dummyConnection) GetAddress() string { return "" }
+func (c *dummyConnection) GetHost() string  { return c.Server.Host }
+func (*dummyConnection) SetError(error)     {}
+
 func Test_Run(t *testing.T) {
 	Convey("ValidateAction.Run()", t, func() {
 		bodyContent := "test body"
@@ -34,7 +46,7 @@ func Test_Run(t *testing.T) {
 		u, err := url.Parse(ts.URL)
 		So(err, ShouldBeNil)
 
-		conn := &connection.Connection{
+		conn := &dummyConnection{
 			Server: &inventory.Server{
 				Host: u.Host,
 			},

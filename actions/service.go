@@ -15,7 +15,7 @@ type ServiceAction struct {
 	State string
 }
 
-func (a *ServiceAction) Run(ctx context.Context, conn *connection.Connection, _ config.Config) error {
+func (a *ServiceAction) Run(ctx context.Context, conn connection.Connection, _ config.Config) error {
 	return conn.Exec(ctx, true, func(sess *connection.Session) (error, *errgroup.Group) {
 		return sess.Start(fmt.Sprintf("service %s %s", a.Name, a.State)), nil
 	})

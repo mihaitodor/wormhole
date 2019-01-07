@@ -125,16 +125,26 @@ func newSession(ctx context.Context, client *ssh.Client, withTerminal bool) (*Se
 	return &sess, nil
 }
 
-type Connection struct {
+type ExecCallbackFunc func(*Session) (error, *errgroup.Group)
+
+type Connection interface {
+	Close() error
+	Exec(context.Context, bool, ExecCallbackFunc) error
+	GetAddress() string
+	GetHost() string
+	SetError(error)
+}
+
+type connection struct {
 	Server *inventory.Server
 	client *ssh.Client
 }
 
-func (conn *Connection) Close() error {
+func (conn *connection) Close() error {
 	return conn.client.Close()
 }
 
-func (conn *Connection) Exec(ctx context.Context, withTerminal bool, fn func(*Session) (error, *errgroup.Group)) error {
+func (conn *connection) Exec(ctx context.Context, withTerminal bool, fn ExecCallbackFunc) error {
 	sess, err := newSession(ctx, conn.client, withTerminal)
 	if err != nil {
 		return fmt.Errorf("failed to create new session: %s", err)
@@ -170,7 +180,19 @@ func (conn *Connection) Exec(ctx context.Context, withTerminal bool, fn func(*Se
 	return ctx.Err()
 }
 
-func NewConnection(server *inventory.Server, timeout time.Duration) (*Connection, error) {
+func (conn *connection) GetAddress() string {
+	return conn.Server.GetAddress()
+}
+
+func (conn *connection) GetHost() string {
+	return conn.Server.Host
+}
+
+func (conn *connection) SetError(err error) {
+	conn.Server.SetError(err)
+}
+
+func NewConnection(server *inventory.Server, timeout time.Duration) (Connection, error) {
 	sshConfig := &ssh.ClientConfig{
 		User: server.Username,
 		Auth: []ssh.AuthMethod{
@@ -186,5 +208,5 @@ func NewConnection(server *inventory.Server, timeout time.Duration) (*Connection
 		return nil, fmt.Errorf("dial error: %s", err)
 	}
 
-	return &Connection{Server: server, client: client}, nil
+	return &connection{Server: server, client: client}, nil
 }

@@ -15,7 +15,7 @@ type AptAction struct {
 	Pkg   []string
 }
 
-func (a *AptAction) Run(ctx context.Context, conn *connection.Connection, _ config.Config) error {
+func (a *AptAction) Run(ctx context.Context, conn connection.Connection, _ config.Config) error {
 	// Update package lists first
 	err := conn.Exec(ctx, true, func(sess *connection.Session) (error, *errgroup.Group) {
 		return sess.Start("apt-get update"), nil

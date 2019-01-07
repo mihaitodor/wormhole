@@ -23,13 +23,13 @@ type Playbook struct {
 	Tasks []*Task
 }
 
-func (p *Playbook) Run(ctx context.Context, wg *sync.WaitGroup, conn *connection.Connection, conf config.Config) {
+func (p *Playbook) Run(ctx context.Context, wg *sync.WaitGroup, conn connection.Connection, conf config.Config) {
 	defer wg.Done()
 
 	for idx, task := range p.Tasks {
 		log.Infof(
 			"Runing task [%d/%d] on %q: %s", idx+1,
-			len(p.Tasks), conn.Server.GetAddress(), task.Name,
+			len(p.Tasks), conn.GetAddress(), task.Name,
 		)
 
 		for _, a := range task.Actions {
@@ -42,10 +42,10 @@ func (p *Playbook) Run(ctx context.Context, wg *sync.WaitGroup, conn *connection
 				// rerun on this host.
 				log.Warnf(
 					"Failed to run action %q on %q: %s",
-					a.GetType(), conn.Server.GetAddress(), err,
+					a.GetType(), conn.GetAddress(), err,
 				)
 
-				conn.Server.SetError(err)
+				conn.SetError(err)
 
 				return
 			}

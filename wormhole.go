@@ -28,9 +28,9 @@ func Run(ctx context.Context, conf config.Config, playbook *playbook.Playbook, i
 		)
 
 		// Open a ssh session to each server in the current batch
-		var connections []*connection.Connection
+		var connections []connection.Connection
 		for _, server := range inventory[start:end] {
-			client, err := connection.NewConnection(server, conf.ConnectTimeout)
+			conn, err := connection.NewConnection(server, conf.ConnectTimeout)
 			if err != nil {
 				err = fmt.Errorf("Failed to connect to server %q: %s", server.GetAddress(), err)
 				server.SetError(err)
@@ -38,7 +38,7 @@ func Run(ctx context.Context, conf config.Config, playbook *playbook.Playbook, i
 				continue
 			}
 
-			connections = append(connections, client)
+			connections = append(connections, conn)
 		}
 
 		if len(connections) == 0 {
@@ -58,7 +58,7 @@ func Run(ctx context.Context, conf config.Config, playbook *playbook.Playbook, i
 			if err != nil {
 				log.Warnf(
 					"Failed to close ssh connection to server %q: %s",
-					conn.Server.GetAddress(), err,
+					conn.GetAddress(), err,
 				)
 			}
 		}

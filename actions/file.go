@@ -45,7 +45,7 @@ func copyFile(sess *connection.Session, src io.Reader, size int64, dest, mode st
 	return nil
 }
 
-func (a *FileAction) Run(ctx context.Context, conn *connection.Connection, conf config.Config) error {
+func (a *FileAction) Run(ctx context.Context, conn connection.Connection, conf config.Config) error {
 	err := conn.Exec(ctx, false, func(sess *connection.Session) (error, *errgroup.Group) {
 		f, err := os.Open(filepath.Join(conf.PlaybookFolder, a.Src))
 		if err != nil {

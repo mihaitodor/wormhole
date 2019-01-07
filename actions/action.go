@@ -10,7 +10,7 @@ import (
 type Action interface {
 	SetType(string)
 	GetType() string
-	Run(context.Context, *connection.Connection, config.Config) error
+	Run(context.Context, connection.Connection, config.Config) error
 }
 
 type ActionBase struct {
