@@ -43,7 +43,7 @@ func Test_Run(t *testing.T) {
 		action := ValidateAction{
 			Scheme:      u.Scheme,
 			Retries:     1,
-			Timeout:     1 * time.Millisecond,
+			Timeout:     100 * time.Millisecond,
 			StatusCode:  200,
 			BodyContent: bodyContent,
 		}
