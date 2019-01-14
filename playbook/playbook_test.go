@@ -44,6 +44,7 @@ func Test_NewPlaybook(t *testing.T) {
 		Convey("should reject playbooks with invalid actions", func() {
 			_, err := NewPlaybook("fixtures/playbook_task_invalid_action.yaml")
 
+			So(err, ShouldNotBeNil)
 			So(err.Error(), ShouldContainSubstring, "failed to unmarshall 'shell' action")
 		})
 	})

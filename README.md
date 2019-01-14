@@ -57,7 +57,7 @@ Use `./wormhole --help` to get quick information about the rest of the parameter
 
 ### Optional command line parameters
 
-- `-i` - The path to the server inventory file (default `inventory.yaml`), which is a Yaml sequence, each sequence item containing the connection details a distinct server. Example server definition:
+- `-i` - The path to the server inventory file (default `inventory.yaml`), which is a Yaml sequence, each sequence item containing the connection details of a distinct server. Example server definition:
 
 ```YAML
 - host: "ec2-127-0-0-1.compute-1.amazonaws.com"
