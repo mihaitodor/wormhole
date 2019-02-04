@@ -66,7 +66,7 @@ func Run(ctx context.Context, conf config.Config, playbook *playbook.Playbook, i
 }
 
 func InitGracefulStop() context.Context {
-	gracefulStop := make(chan os.Signal)
+	gracefulStop := make(chan os.Signal, 1)
 	signal.Notify(gracefulStop, syscall.SIGINT, syscall.SIGTERM)
 
 	ctx, cancel := context.WithCancel(context.Background())
