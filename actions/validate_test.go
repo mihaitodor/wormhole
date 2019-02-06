@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/mihaitodor/wormhole/config"
-	"github.com/mihaitodor/wormhole/connection"
 	"github.com/mihaitodor/wormhole/inventory"
+	"github.com/mihaitodor/wormhole/transport"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -19,7 +19,7 @@ type dummyConnection struct {
 }
 
 func (*dummyConnection) Close() error { return nil }
-func (*dummyConnection) Exec(context.Context, bool, connection.ExecCallbackFunc) error {
+func (*dummyConnection) Exec(context.Context, bool, transport.ExecCallbackFunc) error {
 	return nil
 }
 func (*dummyConnection) GetAddress() string { return "" }

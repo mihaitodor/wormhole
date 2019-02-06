@@ -10,9 +10,9 @@ import (
 	"syscall"
 
 	"github.com/mihaitodor/wormhole/config"
-	"github.com/mihaitodor/wormhole/connection"
 	"github.com/mihaitodor/wormhole/inventory"
 	"github.com/mihaitodor/wormhole/playbook"
+	"github.com/mihaitodor/wormhole/transport"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -28,9 +28,9 @@ func Run(ctx context.Context, conf config.Config, playbook *playbook.Playbook, i
 		)
 
 		// Open a ssh session to each server in the current batch
-		var connections []connection.Connection
+		var connections []transport.Connection
 		for _, server := range inventory[start:end] {
-			conn, err := connection.NewConnection(server, conf.ConnectTimeout)
+			conn, err := transport.NewConnection(server, conf.ConnectTimeout)
 			if err != nil {
 				err = fmt.Errorf("Failed to connect to server %q: %s", server.GetAddress(), err)
 				server.SetError(err)

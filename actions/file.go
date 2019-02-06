@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/mihaitodor/wormhole/config"
-	"github.com/mihaitodor/wormhole/connection"
+	"github.com/mihaitodor/wormhole/transport"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 )
@@ -23,7 +23,7 @@ type FileAction struct {
 }
 
 // Copies the contents of src to dest on a remote host
-func copyFile(sess *connection.Session, src io.Reader, size int64, dest, mode string) error {
+func copyFile(sess *transport.Session, src io.Reader, size int64, dest, mode string) error {
 	// Instruct the remote scp process that we want to bail out immediately
 	defer func() {
 		err := sess.CloseStdin()
@@ -50,8 +50,8 @@ func copyFile(sess *connection.Session, src io.Reader, size int64, dest, mode st
 	return nil
 }
 
-func (a *FileAction) Run(ctx context.Context, conn connection.Connection, conf config.Config) error {
-	err := conn.Exec(ctx, false, func(sess *connection.Session) (error, *errgroup.Group) {
+func (a *FileAction) Run(ctx context.Context, conn transport.Connection, conf config.Config) error {
+	err := conn.Exec(ctx, false, func(sess *transport.Session) (error, *errgroup.Group) {
 		f, err := os.Open(filepath.Join(conf.PlaybookFolder, a.Src))
 		if err != nil {
 			return fmt.Errorf("failed to open source file: %s", err), nil
@@ -89,7 +89,7 @@ func (a *FileAction) Run(ctx context.Context, conn connection.Connection, conf c
 	}
 
 	if a.Owner != "" && a.Group != "" {
-		err = conn.Exec(ctx, true, func(sess *connection.Session) (error, *errgroup.Group) {
+		err = conn.Exec(ctx, true, func(sess *transport.Session) (error, *errgroup.Group) {
 			return sess.Start(
 				fmt.Sprintf("chown %s:%s %s", a.Owner, a.Group, a.Dest),
 			), nil

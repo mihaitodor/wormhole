@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/mihaitodor/wormhole/config"
-	"github.com/mihaitodor/wormhole/connection"
+	"github.com/mihaitodor/wormhole/transport"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -55,7 +55,7 @@ type dummyConnection struct {
 }
 
 func (*dummyConnection) Close() error { return nil }
-func (c *dummyConnection) Exec(context.Context, bool, connection.ExecCallbackFunc) error {
+func (c *dummyConnection) Exec(context.Context, bool, transport.ExecCallbackFunc) error {
 	c.execInvocationCount++
 	return nil
 }

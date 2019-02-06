@@ -9,7 +9,7 @@ import (
 
 	"github.com/mihaitodor/wormhole/actions"
 	"github.com/mihaitodor/wormhole/config"
-	"github.com/mihaitodor/wormhole/connection"
+	"github.com/mihaitodor/wormhole/transport"
 	log "github.com/sirupsen/logrus"
 	yaml "gopkg.in/yaml.v2"
 )
@@ -23,7 +23,7 @@ type Playbook struct {
 	Tasks []*Task
 }
 
-func (p *Playbook) Run(ctx context.Context, wg *sync.WaitGroup, conn connection.Connection, conf config.Config) {
+func (p *Playbook) Run(ctx context.Context, wg *sync.WaitGroup, conn transport.Connection, conf config.Config) {
 	defer wg.Done()
 
 	for idx, task := range p.Tasks {

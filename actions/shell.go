@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/mihaitodor/wormhole/config"
-	"github.com/mihaitodor/wormhole/connection"
+	"github.com/mihaitodor/wormhole/transport"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -29,8 +29,8 @@ func (a *ShellAction) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	return nil
 }
 
-func (a *ShellAction) Run(ctx context.Context, conn connection.Connection, _ config.Config) error {
-	return conn.Exec(ctx, true, func(sess *connection.Session) (error, *errgroup.Group) {
+func (a *ShellAction) Run(ctx context.Context, conn transport.Connection, _ config.Config) error {
+	return conn.Exec(ctx, true, func(sess *transport.Session) (error, *errgroup.Group) {
 		return sess.Start(a.string), nil
 	})
 }

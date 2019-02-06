@@ -4,13 +4,13 @@ import (
 	"context"
 
 	"github.com/mihaitodor/wormhole/config"
-	"github.com/mihaitodor/wormhole/connection"
+	"github.com/mihaitodor/wormhole/transport"
 )
 
 type Action interface {
 	SetType(string)
 	GetType() string
-	Run(context.Context, connection.Connection, config.Config) error
+	Run(context.Context, transport.Connection, config.Config) error
 }
 
 type ActionBase struct {

@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/mihaitodor/wormhole/config"
-	"github.com/mihaitodor/wormhole/connection"
+	"github.com/mihaitodor/wormhole/transport"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -15,9 +15,9 @@ type AptAction struct {
 	Pkg   []string
 }
 
-func (a *AptAction) Run(ctx context.Context, conn connection.Connection, _ config.Config) error {
+func (a *AptAction) Run(ctx context.Context, conn transport.Connection, _ config.Config) error {
 	// Update package lists first
-	err := conn.Exec(ctx, true, func(sess *connection.Session) (error, *errgroup.Group) {
+	err := conn.Exec(ctx, true, func(sess *transport.Session) (error, *errgroup.Group) {
 		return sess.Start("apt-get update"), nil
 	})
 	if err != nil {
@@ -26,7 +26,7 @@ func (a *AptAction) Run(ctx context.Context, conn connection.Connection, _ confi
 
 	// Install the requested packages
 	for _, pkg := range a.Pkg {
-		err = conn.Exec(ctx, true, func(sess *connection.Session) (error, *errgroup.Group) {
+		err = conn.Exec(ctx, true, func(sess *transport.Session) (error, *errgroup.Group) {
 			return sess.Start(fmt.Sprintf("apt-get %s -y %s", a.State, pkg)), nil
 		})
 		if err != nil {

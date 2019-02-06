@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/mihaitodor/wormhole/config"
-	"github.com/mihaitodor/wormhole/connection"
+	"github.com/mihaitodor/wormhole/transport"
 )
 
 type ValidateAction struct {
@@ -50,7 +50,7 @@ func (a *ValidateAction) validate(ctx context.Context, req *http.Request) error 
 	return nil
 }
 
-func (a *ValidateAction) Run(ctx context.Context, conn connection.Connection, _ config.Config) error {
+func (a *ValidateAction) Run(ctx context.Context, conn transport.Connection, _ config.Config) error {
 	host := conn.GetHost()
 	if a.Port != 0 {
 		host = fmt.Sprintf("%s:%d", host, a.Port)
