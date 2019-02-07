@@ -11,6 +11,7 @@ It is designed to read a list of servers from [inventory.yaml](inventory.yaml) a
 - Connections to remote servers are performed via `ssh` using username/password authentication.
 - The `scp` protocol is used for copying files on remote servers.
 - Early playbook cancellation via SIGINT (Ctrl+C) / SIGTERM. The application will exit almost immediately.
+- Parallel execution on multiple hosts.
 - Super-fast build and execution times.
 
 ## Build instructions
