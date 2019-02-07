@@ -13,6 +13,7 @@ type Server struct {
 	Username    string
 	Password    string
 	playbookErr error
+	finished    bool
 }
 
 func (s *Server) GetAddress() string {
@@ -29,6 +30,10 @@ func (s *Server) SetError(err error) {
 
 func (s *Server) GetError() error {
 	return s.playbookErr
+}
+
+func (s *Server) MarkFinished() {
+	s.finished = true
 }
 
 type Inventory []*Server
@@ -48,9 +53,15 @@ func (i Inventory) GetAllServers(predFn func(*Server) bool) []string {
 	return servers
 }
 
+func (i Inventory) GetAllPendingServers() []string {
+	return i.GetAllServers(func(s *Server) bool {
+		return !s.finished && s.playbookErr == nil
+	})
+}
+
 func (i Inventory) GetAllCompletedServers() []string {
 	return i.GetAllServers(func(s *Server) bool {
-		return s.playbookErr == nil
+		return s.finished && s.playbookErr == nil
 	})
 }
 

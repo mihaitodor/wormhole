@@ -63,6 +63,12 @@ func Run(ctx context.Context, conf config.Config, playbook *playbook.Playbook, i
 			}
 		}
 
+		for _, server := range inventory[start:end] {
+			if server.GetError() == nil {
+				server.MarkFinished()
+			}
+		}
+
 		// Check if the user has requested cancellation
 		err := ctx.Err()
 		if err != nil {
@@ -112,6 +118,11 @@ func main() {
 	failed := inventory.GetAllFailedServers()
 	if len(failed) > 0 {
 		log.Errorf("Playbook failed on servers: %s", strings.Join(failed, ", "))
+	}
+
+	skipped := inventory.GetAllPendingServers()
+	if len(skipped) > 0 {
+		log.Infof("Playbook didn't run on servers: %s", strings.Join(skipped, ", "))
 	}
 
 	select {
