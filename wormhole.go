@@ -62,6 +62,13 @@ func Run(ctx context.Context, conf config.Config, playbook *playbook.Playbook, i
 				)
 			}
 		}
+
+		// Check if the user has requested cancellation
+		err := ctx.Err()
+		if err != nil {
+			log.Warnf("Skipping the rest of the hosts due to: %s", err)
+			return
+		}
 	}
 }
 
