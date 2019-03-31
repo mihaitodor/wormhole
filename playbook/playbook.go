@@ -20,7 +20,7 @@ type Task struct {
 }
 
 type Playbook struct {
-	Tasks []*Task
+	Tasks []Task
 }
 
 func (p *Playbook) Run(ctx context.Context, wg *sync.WaitGroup, conn transport.Connection, conf config.Config) {
