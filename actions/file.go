@@ -15,11 +15,11 @@ import (
 
 type FileAction struct {
 	ActionBase
-	Src   string
-	Dest  string
-	Owner string
-	Group string
-	Mode  string
+	Src   string `mapstructure:"src"`
+	Dest  string `mapstructure:"dest"`
+	Owner string `mapstructure:"owner"`
+	Group string `mapstructure:"group"`
+	Mode  string `mapstructure:"mode"`
 }
 
 // Copies the contents of src to dest on a remote host

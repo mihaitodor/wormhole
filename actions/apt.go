@@ -11,8 +11,8 @@ import (
 
 type AptAction struct {
 	ActionBase
-	State string
-	Pkg   []string
+	State string   `mapstructure:"state"`
+	Pkg   []string `mapstructure:"pkg"`
 }
 
 func (a *AptAction) Run(ctx context.Context, conn transport.Connection, _ config.Config) error {

@@ -11,8 +11,8 @@ import (
 
 type ServiceAction struct {
 	ActionBase
-	Name  string
-	State string
+	Name  string `mapstructure:"name"`
+	State string `mapstructure:"state"`
 }
 
 func (a *ServiceAction) Run(ctx context.Context, conn transport.Connection, _ config.Config) error {

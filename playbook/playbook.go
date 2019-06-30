@@ -68,106 +68,6 @@ func NewPlaybook(playbookFile string) (*Playbook, error) {
 	return &playbook, nil
 }
 
-type ActionContainer interface {
-	GetAction() actions.Action
-	IsNil() bool
-}
-
-type FileActionContainer struct {
-	Action *actions.FileAction `yaml:"file"`
-}
-
-func (ac *FileActionContainer) GetAction() actions.Action {
-	return ac.Action
-}
-
-func (ac *FileActionContainer) IsNil() bool {
-	return ac.Action == nil
-}
-
-type AptActionContainer struct {
-	Action *actions.AptAction `yaml:"apt"`
-}
-
-func (ac *AptActionContainer) GetAction() actions.Action {
-	return ac.Action
-}
-
-func (ac *AptActionContainer) IsNil() bool {
-	return ac.Action == nil
-}
-
-type ServiceActionContainer struct {
-	Action *actions.ServiceAction `yaml:"service"`
-}
-
-func (ac *ServiceActionContainer) GetAction() actions.Action {
-	return ac.Action
-}
-
-func (ac *ServiceActionContainer) IsNil() bool {
-	return ac.Action == nil
-}
-
-type ShellActionContainer struct {
-	Action *actions.ShellAction `yaml:"shell"`
-}
-
-func (ac *ShellActionContainer) GetAction() actions.Action {
-	return ac.Action
-}
-
-func (ac *ShellActionContainer) IsNil() bool {
-	return ac.Action == nil
-}
-
-type ValidateActionContainer struct {
-	Action *actions.ValidateAction `yaml:"validate"`
-}
-
-func (ac *ValidateActionContainer) GetAction() actions.Action {
-	return ac.Action
-}
-
-func (ac *ValidateActionContainer) IsNil() bool {
-	return ac.Action == nil
-}
-
-// getActionContainerByName returns a struct containing a pointer
-// to a specific action to be unmarshaled by the YAML parser
-// TODO: Find a way to implement this without redundant methods
-// on the action containers
-func unmarshalAction(name string, unmarshal func(interface{}) error) (ActionContainer, error) {
-	var ac ActionContainer
-	switch name {
-	case "file":
-		ac = &FileActionContainer{}
-	case "apt":
-		ac = &AptActionContainer{}
-	case "service":
-		ac = &ServiceActionContainer{}
-	case "shell":
-		ac = &ShellActionContainer{}
-	case "validate":
-		ac = &ValidateActionContainer{}
-	default:
-		return nil, errors.New("unrecognised action")
-	}
-
-	err := unmarshal(ac)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal action: %s", err)
-	}
-
-	if ac.IsNil() {
-		return nil, errors.New("empty action")
-	}
-
-	ac.GetAction().SetType(name)
-
-	return ac, nil
-}
-
 // UnmarshalYAML unmarshals a task and populates known actions into their
 // specific objects.
 func (t *Task) UnmarshalYAML(unmarshal func(interface{}) error) error {
@@ -189,16 +89,16 @@ func (t *Task) UnmarshalYAML(unmarshal func(interface{}) error) error {
 
 	t.Name = taskName
 
-	// Delete name item, since it doesn't represent an action
+	// Delete name field, since it doesn't represent an action
 	delete(rawTask, "name")
 
-	for actionName := range rawTask {
-		actionContainer, err := unmarshalAction(actionName, unmarshal)
+	for actionType, action := range rawTask {
+		action, err := actions.UnmarshalAction(actionType, action)
 		if err != nil {
-			return fmt.Errorf("failed to unmarshal action %q from task %q: %s", actionName, t.Name, err)
+			return fmt.Errorf("failed to unmarshal action %q from task %q: %s", actionType, t.Name, err)
 		}
 
-		t.Actions = append(t.Actions, actionContainer.GetAction())
+		t.Actions = append(t.Actions, action)
 	}
 
 	if len(t.Actions) == 0 {

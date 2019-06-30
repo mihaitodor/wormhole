@@ -16,13 +16,13 @@ import (
 
 type ValidateAction struct {
 	ActionBase
-	Scheme      string
-	Port        uint
-	UrlPath     string `yaml:"url_path"`
-	Retries     uint
-	Timeout     time.Duration
-	StatusCode  int    `yaml:"status_code"`
-	BodyContent string `yaml:"body_content"`
+	Scheme      string        `mapstructure:"scheme"`
+	Port        uint          `mapstructure:"port"`
+	UrlPath     string        `yaml:"url_path" mapstructure:"url_path"`
+	Retries     uint          `mapstructure:"retries"`
+	Timeout     time.Duration `mapstructure:"timeout"`
+	StatusCode  int           `yaml:"status_code" mapstructure:"status_code"`
+	BodyContent string        `yaml:"body_content" mapstructure:"body_content"`
 }
 
 func (a *ValidateAction) validate(ctx context.Context, req *http.Request) error {

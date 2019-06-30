@@ -45,7 +45,7 @@ func Test_NewPlaybook(t *testing.T) {
 			_, err := NewPlaybook("fixtures/playbook_task_invalid_action.yaml")
 
 			So(err, ShouldNotBeNil)
-			So(err.Error(), ShouldContainSubstring, "failed to unmarshall 'shell' action")
+			So(err.Error(), ShouldContainSubstring, "failed to decode action")
 		})
 	})
 }
