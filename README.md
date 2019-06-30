@@ -147,7 +147,7 @@ Validates that a remote server can be reached on a given `port` after at most `r
 ## TODO
 
 - [ ] Integration tests against a Docker container
-- [ ] Continuous integration using [Travis CI](https://travis-ci.org/)
+- [ ] Continuous integration
 - [ ] Support for ActionFileTemplate using Go's package template
 - [ ] Verbose mode: Copy and print stdout and stderr from the remote process
 - [ ] Better user input validation for the playbook and the inventory
